@@ -39,7 +39,7 @@ services:
       retries: 12
 
   app:
-    image: ghcr.io/sirbuschi2003/netpulse:${NETPULSE_VERSION:-latest}
+    image: ghcr.io/thomas-busche/netpulse:${NETPULSE_VERSION:-latest}
     container_name: netpulse-app
     restart: unless-stopped
     security_opt: [no-new-privileges:true]
@@ -86,7 +86,7 @@ services:
     tmpfs: [/tmp]
 
   proxy:
-    image: ghcr.io/sirbuschi2003/netpulse-proxy:${NETPULSE_VERSION:-latest}
+    image: ghcr.io/thomas-busche/netpulse-proxy:${NETPULSE_VERSION:-latest}
     container_name: netpulse-proxy
     restart: unless-stopped
     security_opt: [no-new-privileges:true]
