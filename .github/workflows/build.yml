@@ -67,7 +67,7 @@ jobs:
       - id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
-          images: ghcr.io/sirbuschi2003/${{ matrix.image }}
+          images: ghcr.io/thomas-busche/${{ matrix.image }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=semver,pattern={{version}}
@@ -90,5 +90,5 @@ jobs:
       - name: Image signieren
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
-          IMAGE: ghcr.io/sirbuschi2003/${{ matrix.image }}
+          IMAGE: ghcr.io/thomas-busche/${{ matrix.image }}
         run: cosign sign --yes "${IMAGE}@${DIGEST}"
