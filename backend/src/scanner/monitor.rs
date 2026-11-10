@@ -199,7 +199,7 @@ pub async fn apply_results(state: &AppState, results: &[Reading]) -> Result<()> 
 }
 
 /// Erst Ping; antwortet das Gerät nicht, werden bekannte offene Ports per TCP geprüft.
-async fn check_device(pinger: &Pinger, ip: IpAddr, open_ports: &[i32]) -> Option<Duration> {
+pub async fn check_device(pinger: &Pinger, ip: IpAddr, open_ports: &[i32]) -> Option<Duration> {
     if let Some(rtt) = pinger.ping_ip(ip, Duration::from_secs(1), 2).await {
         return Some(rtt);
     }

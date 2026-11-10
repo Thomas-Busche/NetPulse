@@ -1,0 +1,33 @@
+# NetPulse-Probe für einen entfernten Sektor (Filiale, abgeschottetes Netz)
+#
+# Die Probe braucht keine Datenbank und keine Portfreigabe: Sie holt sich ihre Aufgaben per
+# ausgehendem HTTPS vom NetPulse-Server, sucht und prüft die Geräte vor Ort und meldet die
+# Ergebnisse zurück.
+#
+# Einrichten:
+#   1. Im NetPulse-Server unter Netzwerke → „Probes für entfernte Sektoren“ eine Probe für den
+#      Sektor anlegen und den angezeigten Schlüssel (npp_…) kopieren.
+#   2. Diesen Stack auf einem Rechner im Filialnetz starten (z. B. in Portainer) und die
+#      Variablen NETPULSE_SERVER und PROBE_TOKEN setzen.
+#   3. Nach spätestens einer Minute steht die Probe in der Liste auf „verbunden“.
+
+services:
+  probe:
+    image: ghcr.io/thomas-busche/netpulse:${NETPULSE_VERSION:-latest}
+    container_name: netpulse-probe
+    command: ["probe"]
+    restart: unless-stopped
+    security_opt: [no-new-privileges:true]
+    # Host-Netz, damit Ping und ARP (MAC-Adressen) das lokale Netz direkt sehen
+    network_mode: host
+    environment:
+      # Adresse des NetPulse-Servers, z. B. https://monitoring.example.org
+      NETPULSE_SERVER: ${NETPULSE_SERVER:?NETPULSE_SERVER fehlt}
+      # Schlüssel der Probe (npp_…)
+      PROBE_TOKEN: ${PROBE_TOKEN:?PROBE_TOKEN fehlt}
+      TZ: ${TZ:-Europe/Berlin}
+      RUST_LOG: ${RUST_LOG:-info}
+    cap_drop: [ALL]
+    cap_add: [NET_RAW]
+    read_only: true
+    tmpfs: [/tmp]

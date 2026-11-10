@@ -9,6 +9,7 @@ mod dashboard;
 mod devices;
 mod energy;
 mod integrations;
+mod probes;
 mod public;
 mod session;
 mod sites;
@@ -94,6 +95,9 @@ pub fn router(state: AppState) -> Router {
         .route("/networks", get(admin::list_networks).post(admin::add_network))
         .route("/networks/{id}", axum::routing::patch(admin::update_network).delete(admin::delete_network))
         .route("/networks/{id}/scan", post(admin::scan_network))
+        .route("/probes", get(probes::list).post(probes::create))
+        .route("/probes/{id}", axum::routing::patch(probes::update).delete(probes::remove))
+        .route("/probes/{id}/token", post(probes::new_key))
         .route("/scan", post(admin::trigger_scan))
         .route("/scan/status", get(admin::scan_status))
         .route("/settings/discovery", get(admin::get_discovery).put(admin::set_discovery))
@@ -156,7 +160,11 @@ pub fn router(state: AppState) -> Router {
         .route("/integration/v1/inventory", put(integrations::put_inventory))
         .route("/integration/v1/pause", post(integrations::pause))
         .route("/integration/v1/pause/{id}/end", post(integrations::end_pause))
-        .route("/integration/v1/report", post(integrations::report));
+        .route("/integration/v1/report", post(integrations::report))
+        // Probes in entfernten Sektoren: Anmeldung per eigenem Schlüssel (npp_…), ebenfalls ohne Cookie
+        .route("/probe/v1/config", get(probes::config))
+        .route("/probe/v1/results", post(probes::results))
+        .route("/probe/v1/discovery", post(probes::discovery));
 
     Router::new()
         .nest("/api", api)

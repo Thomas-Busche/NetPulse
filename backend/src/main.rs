@@ -28,6 +28,7 @@ mod maintenance;
 mod mib;
 mod oui;
 mod perf;
+mod probe;
 mod push;
 mod scanner;
 mod sites;
@@ -80,6 +81,11 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer().with_filter(console_only_info))
         .with(logbuf::BufferLayer)
         .init();
+
+    // Probe-Betrieb: „netpulse probe“ – ohne Datenbank, meldet an einen NetPulse-Server
+    if std::env::args().nth(1).as_deref() == Some("probe") {
+        return probe::run().await;
+    }
 
     let config = Arc::new(Config::from_env()?);
     let db = connect_db(&config.database_url, config.db_max_connections).await?;

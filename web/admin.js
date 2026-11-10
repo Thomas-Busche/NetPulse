@@ -281,6 +281,7 @@ async function viewNetworks() {
           <p class="hint">Ein neues Netz wird sofort gescannt – auch wenn gerade ein anderer Scan läuft.</p>
         </form></section>
     </div>
+    <div class="grid" id="probe-area"></div>
     <div class="grid" id="sched-area"></div>`;
 
   let networks = [];
@@ -357,8 +358,59 @@ async function viewNetworks() {
     }
   });
   await render();
+  await renderProbes();
   await renderSchedule();
   autoRefresh(render, 5);
+}
+
+/** Probes: NetPulse-Ableger, die Netze und Geräte eines entfernten Sektors vor Ort prüfen */
+async function renderProbes() {
+  const area = $('#probe-area');
+  const probes = await api('/probes');
+  const used = new Set(probes.map((p) => p.site_id));
+  const free = siteTree(sitesCache.list).filter(({ site }) => site.id !== 1 && !used.has(site.id) && can('networks.manage', site.id));
+  area.innerHTML = `<section class="card span-3"><header><h2>${icon('antenna-bars-5')}Probes für entfernte Sektoren</h2></header>
+    <p class="muted">Eine Probe läuft in der Filiale bzw. im abgeschotteten Netz (<code>netpulse probe</code>, siehe <code>deploy/probe-stack.yml</code>),
+      sucht dort Geräte, prüft sie und meldet die Ergebnisse über ausgehendes HTTPS. Netze und Geräte eines Sektors mit Probe prüft der Server nicht mehr selbst.</p>
+    ${probes.length ? `<div class="table-wrap"><table><thead><tr><th>Probe</th><th>Sektor</th><th>Zustand</th><th>Zuletzt gemeldet</th><th></th></tr></thead><tbody>
+      ${probes.map((p) => `<tr><td>${esc(p.name)}${p.version ? `<div class="muted small">Version ${esc(p.version)}${p.address ? ` · ${esc(p.address)}` : ''}</div>` : ''}
+          ${p.last_error ? `<div class="small error">${esc(p.last_error)}</div>` : ''}</td>
+        <td>${esc(p.site)}</td>
+        <td>${!p.enabled ? '<span class="badge plain">aus</span>' : p.online ? '<span class="badge st-up">verbunden</span>' : '<span class="badge st-down">keine Verbindung</span>'}</td>
+        <td class="small">${p.last_seen ? esc(fmtAgo(p.last_seen)) : '<span class="muted">noch nie</span>'}</td>
+        <td class="actions"><button class="ghost sm" type="button" data-probe-toggle="${p.id}" title="${p.enabled ? 'Abschalten' : 'Einschalten'}">${icon(p.enabled ? 'player-pause' : 'player-play', 'i-sm')}</button>
+          <button class="ghost sm" type="button" data-probe-key="${p.id}" title="Neuen Schlüssel erzeugen">${icon('key', 'i-sm')}</button>
+          <button class="ghost sm" type="button" data-probe-del="${p.id}" title="Entfernen">${icon('trash', 'i-sm')}</button></td></tr>`).join('')}
+      </tbody></table></div>` : empty('Noch keine Probe eingerichtet.', 'antenna-bars-5')}
+    ${free.length ? `<form class="form-row" id="probe-form"><label>Name<input name="name" required maxlength="80" placeholder="z. B. Probe Filiale Nord"></label>
+      <label>Sektor<select name="site_id">${free.map(({ site, depth }) => `<option value="${site.id}">${'  '.repeat(depth)}${esc(site.name)}</option>`).join('')}</select></label>
+      <button type="submit">${icon('plus')}Probe anlegen</button></form>` : ''}</section>`;
+  const showKey = (token) => openModal('Schlüssel der Probe', `<p>Der Schlüssel wird nur jetzt angezeigt. In der Filiale als <code>PROBE_TOKEN</code> eintragen:</p>
+    <p><code class="token-show">${esc(token)}</code></p>
+    <p class="hint">Dazu <code>NETPULSE_SERVER</code> mit der Adresse dieses Servers (https://…). Die Probe braucht nur ausgehend HTTPS.</p>`);
+  $('#probe-form', area)?.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const e = ev.target.elements;
+    attempt(async () => {
+      const r = await api('/probes', { method: 'POST', body: { name: e.name.value.trim(), site_id: Number(e.site_id.value) } });
+      await loadSites(true);
+      await renderProbes();
+      showKey(r.token);
+    });
+  });
+  area.querySelector('section').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-probe-toggle],[data-probe-key],[data-probe-del]');
+    if (!btn) return;
+    const p = probes.find((x) => x.id === Number(btn.dataset.probeToggle || btn.dataset.probeKey || btn.dataset.probeDel));
+    if (btn.dataset.probeToggle) {
+      attempt(async () => { await api(`/probes/${p.id}`, { method: 'PATCH', body: { enabled: !p.enabled } }); await renderProbes(); });
+    } else if (btn.dataset.probeKey) {
+      if (!confirm(`Neuen Schlüssel für „${p.name}“ erzeugen? Der alte wird sofort ungültig.`)) return;
+      attempt(async () => { const r = await api(`/probes/${p.id}/token`, { method: 'POST' }); showKey(r.token); });
+    } else if (confirm(`Probe „${p.name}“ entfernen? Der Server prüft den Sektor ${p.site} dann wieder selbst.`)) {
+      attempt(async () => { await api(`/probes/${p.id}`, { method: 'DELETE' }); await loadSites(true); await renderProbes(); }, 'Probe entfernt');
+    }
+  });
 }
 
 const SCHEDULE_MODES = {
