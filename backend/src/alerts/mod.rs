@@ -35,6 +35,21 @@ pub(crate) struct Rule {
     pub repeat_min: i32,
     pub check_id: Option<i64>,
     pub pattern: Option<String>,
+    /// Nur Geräte/Dienste in diesem Sektor (inkl. Unter-Sektoren)
+    pub site_id: Option<i64>,
+    /// Nur Geräte mit diesem Tag
+    pub tag: Option<String>,
+    /// Feste Schwere statt der Voreinstellung der Regelart
+    pub severity: Option<String>,
+    /// Benutzergruppen, die zusätzlich benachrichtigt werden
+    pub group_ids: Vec<i64>,
+    /// Eskalation: unbestätigt nach so vielen Minuten an weitere Kanäle/Gruppen (0 = aus)
+    pub escalate_after_min: i32,
+    pub escalate_channel_ids: Vec<i64>,
+    pub escalate_group_ids: Vec<i64>,
+    /// Aus `site_id` berechnet: der Sektor mit allen Unter-Sektoren
+    #[sqlx(skip)]
+    pub sites: Option<Vec<i64>>,
 }
 
 pub async fn run(state: AppState) {
@@ -57,12 +72,19 @@ pub async fn run(state: AppState) {
 
 async fn evaluate(state: &AppState, cursor: i64) -> Result<i64> {
     let _perf = crate::perf::Timer::new("Alarmprüfung");
-    let rules: Vec<Rule> = sqlx::query_as(
-        "SELECT id, name, kind, device_id, threshold, duration_min, channel_ids, notify_recovery, repeat_min, check_id, pattern
+    let mut rules: Vec<Rule> = sqlx::query_as(
+        "SELECT id, name, kind, device_id, threshold, duration_min, channel_ids, notify_recovery, repeat_min, check_id, pattern,
+                site_id, tag, severity, group_ids, escalate_after_min, escalate_channel_ids, escalate_group_ids
            FROM alert_rules WHERE enabled",
     )
     .fetch_all(&state.db)
     .await?;
+    if rules.iter().any(|r| r.site_id.is_some()) {
+        let tree = crate::sites::tree(&state.db).await?;
+        for rule in &mut rules {
+            rule.sites = rule.site_id.map(|s| crate::auth::descendants(s, &tree));
+        }
+    }
 
     let new_cursor = event_rules(state, &rules, cursor).await?;
     for rule in &rules {
@@ -82,7 +104,22 @@ async fn evaluate(state: &AppState, cursor: i64) -> Result<i64> {
     if let Err(e) = reminders(state, &rules).await {
         tracing::error!("Erinnerungen: {e:#}");
     }
+    if let Err(e) = escalations(state, &rules).await {
+        tracing::error!("Eskalation: {e:#}");
+    }
     Ok(new_cursor)
+}
+
+/// SQL-Bedingung für Sektor und Tag einer Regel (Gerät mit Alias `d`, Parameter `$a` = Sektoren, `$b` = Tag)
+fn scope_sql(a: u8, b: u8) -> String {
+    format!("(${a}::bigint[] IS NULL OR d.site_id = ANY(${a})) AND (${b}::text IS NULL OR ${b} = ANY(d.tags))")
+}
+
+/// Passt ein Gerät (Sektor, Tags) zur Regel?
+fn in_scope(rule: &Rule, site: Option<i64>, tags: &[String]) -> bool {
+    let site_ok = rule.sites.as_ref().is_none_or(|s| site.is_some_and(|id| s.contains(&id)));
+    let tag_ok = rule.tag.as_ref().is_none_or(|t| tags.contains(t));
+    site_ok && tag_ok
 }
 
 fn device_link(state: &AppState, device_id: i64) -> Option<String> {
@@ -110,14 +147,25 @@ async fn event_rules(state: &AppState, rules: &[Rule], cursor: i64) -> Result<i6
             if rule.device_id.is_some() && rule.device_id != device_id {
                 continue;
             }
+            if rule.sites.is_some() || rule.tag.is_some() {
+                let row: Option<(i64, Vec<String>)> = match device_id {
+                    Some(id) => sqlx::query_as("SELECT site_id, tags FROM devices WHERE id = $1").bind(id).fetch_optional(&state.db).await?,
+                    None => None,
+                };
+                let (site, tags) = row.map_or((None, Vec::new()), |(s, t)| (Some(s), t));
+                if !in_scope(rule, site, &tags) {
+                    continue;
+                }
+            }
             // Aufgaben-Regeln: optional nur für Container, deren Name den Suchtext enthält
             if rule_kind == "job_failed" && !matches_pattern(rule, &message) {
                 continue;
             }
-            sqlx::query("INSERT INTO alerts (rule_id, device_id, message, resolved_at) VALUES ($1, $2, $3, now())")
+            sqlx::query("INSERT INTO alerts (rule_id, device_id, message, resolved_at, severity) VALUES ($1, $2, $3, now(), $4)")
                 .bind(rule.id)
                 .bind(device_id)
                 .bind(&message)
+                .bind(severity_of(rule))
                 .execute(&state.db)
                 .await?;
             let severity = if rule_kind == "new_device" { Severity::Info } else { Severity::Warning };
@@ -139,7 +187,7 @@ async fn device_down(state: &AppState, rule: &Rule) -> Result<()> {
     // Neue Ausfälle
     // Geräte hinter einem ebenfalls ausgefallenen Elterngerät (Switch, AP …) werden nicht einzeln gemeldet –
     // die Meldung des Elterngeräts nennt stattdessen die Zahl der betroffenen Geräte.
-    let down: Vec<(i64, String, i64, i64)> = sqlx::query_as(
+    let down: Vec<(i64, String, i64, i64)> = sqlx::query_as(&format!(
         "WITH RECURSIVE anc(child, ancestor, depth) AS (
              SELECT id, parent_id, 1 FROM devices WHERE parent_id IS NOT NULL
            UNION ALL
@@ -153,12 +201,15 @@ async fn device_down(state: &AppState, rule: &Rule) -> Result<()> {
            FROM devices d
           WHERE d.monitored AND d.status = 'down'
             AND d.status_since <= now() - make_interval(mins => $1)
-            AND ($2::bigint IS NULL OR d.id = $2)
+            AND ($2::bigint IS NULL OR d.id = $2) AND {}
             AND NOT EXISTS (SELECT 1 FROM anc JOIN devices a ON a.id = anc.ancestor
                              WHERE anc.child = d.id AND a.status = 'down' AND a.monitored)",
-    )
+        scope_sql(3, 4)
+    ))
     .bind(rule.duration_min)
     .bind(rule.device_id)
+    .bind(&rule.sites)
+    .bind(&rule.tag)
     .fetch_all(&state.db)
     .await?;
     for (device_id, label, minutes, dependents) in down {
@@ -223,11 +274,14 @@ async fn threshold(state: &AppState, rule: &Rule) -> Result<()> {
                 min(s.{column}) FILTER (WHERE s.time > now() - make_interval(mins => $2))
            FROM device_stats s JOIN devices d ON d.id = s.device_id
           WHERE s.time > now() - make_interval(mins => GREATEST($2, 0) + 15)
-            AND s.{column} IS NOT NULL AND ($1::bigint IS NULL OR s.device_id = $1)
-          GROUP BY s.device_id, d.name, d.hostname, d.ip"
+            AND s.{column} IS NOT NULL AND ($1::bigint IS NULL OR s.device_id = $1) AND {scope}
+          GROUP BY s.device_id, d.name, d.hostname, d.ip",
+        scope = scope_sql(3, 4)
     ))
     .bind(rule.device_id)
     .bind(window)
+    .bind(&rule.sites)
+    .bind(&rule.tag)
     .fetch_all(&state.db)
     .await?;
 
@@ -274,13 +328,16 @@ fn check_link(state: &AppState) -> Option<String> {
 async fn check_down(state: &AppState, rule: &Rule) -> Result<()> {
     type Down = (i64, String, String, Option<String>, Option<i64>, i64);
     let down: Vec<Down> = sqlx::query_as(
-        "SELECT id, name, target, last_message, device_id, (EXTRACT(EPOCH FROM now() - status_since) / 60)::bigint
-           FROM checks
-          WHERE enabled AND status = 'down' AND status_since <= now() - make_interval(mins => $1)
-            AND ($2::bigint IS NULL OR id = $2)",
+        "SELECT c.id, c.name, c.target, c.last_message, c.device_id, (EXTRACT(EPOCH FROM now() - c.status_since) / 60)::bigint
+           FROM checks c LEFT JOIN devices d ON d.id = c.device_id
+          WHERE c.enabled AND c.status = 'down' AND c.status_since <= now() - make_interval(mins => $1)
+            AND ($2::bigint IS NULL OR c.id = $2)
+            AND ($3::bigint[] IS NULL OR c.site_id = ANY($3)) AND ($4::text IS NULL OR $4 = ANY(d.tags))",
     )
     .bind(rule.duration_min)
     .bind(rule.check_id)
+    .bind(&rule.sites)
+    .bind(&rule.tag)
     .fetch_all(&state.db)
     .await?;
     for (check_id, name, target, reason, device_id, minutes) in down {
@@ -331,12 +388,15 @@ async fn cert_expiry(state: &AppState, rule: &Rule) -> Result<()> {
     let days = rule.threshold.unwrap_or(14.0).max(0.0);
     type Expiring = (i64, String, String, Option<i64>, chrono::DateTime<chrono::Utc>);
     let expiring: Vec<Expiring> = sqlx::query_as(
-        "SELECT id, name, target, device_id, cert_expires_at FROM checks
-          WHERE enabled AND cert_expires_at IS NOT NULL AND cert_expires_at < now() + make_interval(days => $1)
-            AND ($2::bigint IS NULL OR id = $2)",
+        "SELECT c.id, c.name, c.target, c.device_id, c.cert_expires_at FROM checks c LEFT JOIN devices d ON d.id = c.device_id
+          WHERE c.enabled AND c.cert_expires_at IS NOT NULL AND c.cert_expires_at < now() + make_interval(days => $1)
+            AND ($2::bigint IS NULL OR c.id = $2)
+            AND ($3::bigint[] IS NULL OR c.site_id = ANY($3)) AND ($4::text IS NULL OR $4 = ANY(d.tags))",
     )
     .bind(days as i32)
     .bind(rule.check_id)
+    .bind(&rule.sites)
+    .bind(&rule.tag)
     .fetch_all(&state.db)
     .await?;
     for (check_id, name, target, device_id, until) in expiring {
@@ -371,13 +431,14 @@ async fn cert_expiry(state: &AppState, rule: &Rule) -> Result<()> {
 
 async fn open_check_alert(state: &AppState, rule: &Rule, check_id: i64, device_id: Option<i64>, message: &str) -> sqlx::Result<bool> {
     let inserted: Option<(i64,)> = sqlx::query_as(
-        "INSERT INTO alerts (rule_id, check_id, device_id, message, last_notified_at) VALUES ($1, $2, NULL, $3, now())
+        "INSERT INTO alerts (rule_id, check_id, device_id, message, last_notified_at, severity) VALUES ($1, $2, NULL, $3, now(), $4)
          ON CONFLICT (rule_id, (COALESCE(device_id, 0)), (COALESCE(check_id, 0))) WHERE resolved_at IS NULL DO NOTHING
          RETURNING id",
     )
     .bind(rule.id)
     .bind(check_id)
     .bind(message)
+    .bind(severity_of(rule))
     .fetch_optional(&state.db)
     .await?;
     let _ = device_id;
@@ -455,12 +516,15 @@ async fn syslog_match(state: &AppState, rule: &Rule) -> Result<()> {
           WHERE m.time > $1 AND m.severity <= $2
             AND ($3::text IS NULL OR m.message ILIKE $3 OR m.app ILIKE $3)
             AND ($4::bigint IS NULL OR m.device_id = $4)
+            AND ($5::bigint[] IS NULL OR d.site_id = ANY($5)) AND ($6::text IS NULL OR $6 = ANY(d.tags))
           GROUP BY m.device_id, d.name, d.reported_name, d.hostname, m.source",
     )
     .bind(since)
     .bind(max_severity)
     .bind(&pattern)
     .bind(rule.device_id)
+    .bind(&rule.sites)
+    .bind(&rule.tag)
     .fetch_all(&state.db)
     .await?;
     let newest = hits.iter().map(|h| h.5).max().unwrap_or(since).max(since);
@@ -479,10 +543,11 @@ async fn syslog_match(state: &AppState, rule: &Rule) -> Result<()> {
     }
     for (device_id, label, count, sample, severity, _) in hits.into_iter().take(5) {
         let message = if count == 1 { sample.clone() } else { format!("{count} Meldungen, zuletzt: {sample}") };
-        sqlx::query("INSERT INTO alerts (rule_id, device_id, message, resolved_at) VALUES ($1, $2, $3, now())")
+        sqlx::query("INSERT INTO alerts (rule_id, device_id, message, resolved_at, severity) VALUES ($1, $2, $3, now(), $4)")
             .bind(rule.id)
             .bind(device_id)
             .bind(&message)
+            .bind(severity_of(rule))
             .execute(&state.db)
             .await?;
         let level = match severity {
@@ -504,7 +569,7 @@ async fn reminders(state: &AppState, rules: &[Rule]) -> Result<()> {
         // Meldung ohne die ursprüngliche Dauer („seit 5 Min.“) – die aktuelle Dauer kommt dazu
         let due: Vec<(i64, Option<i64>, String, i32, i64)> = sqlx::query_as(
             "UPDATE alerts SET last_notified_at = now(), notify_count = notify_count + 1
-              WHERE rule_id = $1 AND resolved_at IS NULL
+              WHERE rule_id = $1 AND resolved_at IS NULL AND acknowledged_at IS NULL
                 AND COALESCE(last_notified_at, opened_at) <= now() - make_interval(mins => $2)
               RETURNING id, device_id, message, notify_count, (EXTRACT(EPOCH FROM now() - opened_at) / 60)::bigint",
         )
@@ -513,6 +578,7 @@ async fn reminders(state: &AppState, rules: &[Rule]) -> Result<()> {
         .fetch_all(&state.db)
         .await?;
         for (_, device_id, message, count, minutes) in due {
+            // Bestätigte Alarme werden oben ausgefiltert – wer sich kümmert, wird nicht weiter erinnert
             let severity = if matches!(rule.kind.as_str(), "device_down" | "check_down") { Severity::Critical } else { Severity::Warning };
             let mut n = Notification::new(
                 format!("Erinnerung ({count}.): {}", rule.name),
@@ -538,7 +604,7 @@ fn strip_duration(message: &str) -> String {
 /// Legt einen offenen Alarm an; `false`, wenn für Regel+Gerät schon einer offen ist.
 async fn open_alert(state: &AppState, rule: &Rule, device_id: Option<i64>, message: &str, value: Option<f32>) -> sqlx::Result<bool> {
     let inserted: Option<(i64,)> = sqlx::query_as(
-        "INSERT INTO alerts (rule_id, device_id, message, value, last_notified_at) VALUES ($1, $2, $3, $4, now())
+        "INSERT INTO alerts (rule_id, device_id, message, value, last_notified_at, severity) VALUES ($1, $2, $3, $4, now(), $5)
          ON CONFLICT (rule_id, (COALESCE(device_id, 0)), (COALESCE(check_id, 0))) WHERE resolved_at IS NULL DO NOTHING
          RETURNING id",
     )
@@ -546,13 +612,81 @@ async fn open_alert(state: &AppState, rule: &Rule, device_id: Option<i64>, messa
     .bind(device_id)
     .bind(message)
     .bind(value)
+    .bind(severity_of(rule))
     .fetch_optional(&state.db)
     .await?;
     Ok(inserted.is_some())
 }
 
+/// Voreingestellte Schwere je Regelart (für die Anzeige im Leitstand)
+pub fn default_severity(kind: &str) -> &'static str {
+    match kind {
+        "device_down" | "check_down" => "critical",
+        "new_device" => "info",
+        _ => "warning",
+    }
+}
+
+fn severity_of(rule: &Rule) -> String {
+    rule.severity.clone().unwrap_or_else(|| default_severity(&rule.kind).to_string())
+}
+
+fn parse_severity(name: &str) -> Severity {
+    match name {
+        "critical" => Severity::Critical,
+        "info" => Severity::Info,
+        _ => Severity::Warning,
+    }
+}
+
+/// Unbestätigte Alarme nach `escalate_after_min` Minuten einmalig an die Eskalationskanäle und -gruppen melden
+async fn escalations(state: &AppState, rules: &[Rule]) -> Result<()> {
+    for rule in rules.iter().filter(|r| r.escalate_after_min > 0) {
+        if rule.escalate_channel_ids.is_empty() && rule.escalate_group_ids.is_empty() {
+            continue;
+        }
+        let due: Vec<(Option<i64>, Option<i64>, String, i64)> = sqlx::query_as(
+            "UPDATE alerts SET escalated_at = now()
+              WHERE rule_id = $1 AND resolved_at IS NULL AND acknowledged_at IS NULL AND escalated_at IS NULL
+                AND opened_at <= now() - make_interval(mins => $2)
+              RETURNING device_id, check_id, message, (EXTRACT(EPOCH FROM now() - opened_at) / 60)::bigint",
+        )
+        .bind(rule.id)
+        .bind(rule.escalate_after_min)
+        .fetch_all(&state.db)
+        .await?;
+        for (device_id, check_id, message, minutes) in due {
+            let mut n = Notification::new(
+                format!("Eskalation: {}", rule.name),
+                format!("{} – seit {minutes} Min. nicht bestätigt", strip_duration(&message)),
+                Severity::Critical,
+                device_id.and_then(|id| device_link(state, id)),
+            );
+            n.device_id = device_id;
+            n.check_id = check_id;
+            let target = Targets { channels: &rule.escalate_channel_ids, groups: &rule.escalate_group_ids };
+            deliver_to(state, rule, n, target).await;
+        }
+    }
+    Ok(())
+}
+
+struct Targets<'a> {
+    channels: &'a [i64],
+    groups: &'a [i64],
+}
+
 /// Platzhalter ergänzen, im Browser anzeigen und an alle Kanäle der Regel zustellen
-async fn dispatch(state: &AppState, rule: &Rule, mut n: Notification) {
+async fn dispatch(state: &AppState, rule: &Rule, n: Notification) {
+    let target = Targets { channels: &rule.channel_ids, groups: &rule.group_ids };
+    deliver_to(state, rule, n, target).await;
+}
+
+async fn deliver_to(state: &AppState, rule: &Rule, mut n: Notification, target: Targets<'_>) {
+    // Feste Schwere der Regel (Entwarnungen bleiben Entwarnungen)
+    if let (Some(name), false) = (&rule.severity, n.severity == Severity::Resolved) {
+        n.severity = parse_severity(name);
+    }
     // Wartungsfenster: aufzeichnen ja, benachrichtigen nein
     if let Some(window) = crate::maintenance::active_for(&state.db, n.device_id, n.check_id).await {
         tracing::info!("„{}“ nicht gemeldet – Wartungsfenster „{window}“ aktiv", n.title);
@@ -586,11 +720,13 @@ async fn dispatch(state: &AppState, rule: &Rule, mut n: Notification) {
         "severity": n.severity.name(),
         "rule": rule.name,
         "device_id": n.device_id,
+        "check_id": n.check_id,
     }));
+    deliver::to_groups(state, target.groups, &n).await;
     let channels: Vec<(i64, String, String, String)> = match sqlx::query_as(
         "SELECT id, name, kind, config FROM notification_channels WHERE enabled AND id = ANY($1)",
     )
-    .bind(&rule.channel_ids)
+    .bind(target.channels)
     .fetch_all(&state.db)
     .await
     {
@@ -616,5 +752,39 @@ mod tests {
     fn dauer_entfernen() {
         assert_eq!(strip_duration("NAS (10.0.0.5) ist seit 5 Min. nicht erreichbar"), "NAS (10.0.0.5) ist nicht erreichbar");
         assert_eq!(strip_duration("CPU hoch"), "CPU hoch");
+    }
+
+    fn rule(sites: Option<Vec<i64>>, tag: Option<&str>) -> Rule {
+        Rule {
+            id: 1,
+            name: "r".into(),
+            kind: "device_down".into(),
+            device_id: None,
+            threshold: None,
+            duration_min: 0,
+            channel_ids: vec![],
+            notify_recovery: false,
+            repeat_min: 0,
+            check_id: None,
+            pattern: None,
+            site_id: None,
+            tag: tag.map(str::to_string),
+            severity: None,
+            group_ids: vec![],
+            escalate_after_min: 0,
+            escalate_channel_ids: vec![],
+            escalate_group_ids: vec![],
+            sites,
+        }
+    }
+
+    #[test]
+    fn regel_bereich() {
+        assert!(in_scope(&rule(None, None), None, &[]));
+        assert!(in_scope(&rule(Some(vec![2, 3]), None), Some(3), &[]));
+        assert!(!in_scope(&rule(Some(vec![2, 3]), None), Some(1), &[]));
+        assert!(!in_scope(&rule(Some(vec![2]), None), None, &[]));
+        assert!(in_scope(&rule(None, Some("kritisch")), Some(1), &["kritisch".into()]));
+        assert!(!in_scope(&rule(None, Some("kritisch")), Some(1), &["test".into()]));
     }
 }

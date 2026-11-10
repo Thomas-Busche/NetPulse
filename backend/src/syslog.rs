@@ -574,7 +574,8 @@ async fn writer(state: AppState, mut rx: mpsc::Receiver<LogMsg>) {
         let _perf = crate::perf::Timer::new("Syslog/Traps speichern");
         let result = sqlx::query(
             "INSERT INTO syslog_messages (time, device_id, source, facility, severity, host, app, message)
-             SELECT u.time, (SELECT id FROM devices d WHERE d.ip = u.src::inet LIMIT 1), u.src::inet, u.fac, u.sev, u.host, u.app, u.msg
+             SELECT u.time, (SELECT d.id FROM devices d WHERE d.ip = u.src::inet
+                       ORDER BY EXISTS (SELECT 1 FROM probes p WHERE p.site_id = d.site_id AND p.enabled), d.id LIMIT 1), u.src::inet, u.fac, u.sev, u.host, u.app, u.msg
                FROM UNNEST($1::timestamptz[], $2::text[], $3::int2[], $4::int2[], $5::text[], $6::text[], $7::text[])
                     AS u(time, src, fac, sev, host, app, msg)",
         )

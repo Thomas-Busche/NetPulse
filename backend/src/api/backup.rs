@@ -11,7 +11,7 @@ use serde_json::{json, Value};
 
 use crate::{
     audit, auth,
-    auth::AdminUser,
+    auth::{perm, Need},
     backup::{self, Envelope},
     error::{ApiError, ApiResult},
     AppState,
@@ -22,14 +22,14 @@ const MIN_PASSWORD: usize = 12;
 /// Eigenes Konto-Passwort bestätigen – eine Sicherung enthält alle Zugangsdaten im Klartext (verschlüsselt)
 async fn confirm_account(st: &AppState, user: &auth::CurrentUser, headers: &HeaderMap, password: &str) -> ApiResult<()> {
     let ip = auth::client_ip(headers).unwrap_or_else(|| "unbekannt".into());
-    if !st.login_limiter.try_attempt(&user.username, &ip) {
+    if !st.login_limiter.try_attempt(&user.username, &ip).await {
         return Err(ApiError::TooManyRequests);
     }
     let (hash,): (String,) = sqlx::query_as("SELECT password_hash FROM users WHERE id = $1").bind(user.id).fetch_one(&st.db).await?;
     if !auth::verify_password(password.to_string(), hash).await {
         return Err(ApiError::BadRequest("Dein Konto-Passwort ist falsch".into()));
     }
-    st.login_limiter.success(&user.username, &ip);
+    st.login_limiter.success(&user.username, &ip).await;
     Ok(())
 }
 
@@ -59,7 +59,7 @@ pub struct ExportRequest {
 
 pub async fn export(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::BackupManage>,
     headers: HeaderMap,
     Json(req): Json<ExportRequest>,
 ) -> ApiResult<Response> {
@@ -84,7 +84,7 @@ pub struct RestoreRequest {
 
 pub async fn restore(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::BackupManage>,
     headers: HeaderMap,
     Json(req): Json<RestoreRequest>,
 ) -> ApiResult<Json<Value>> {
@@ -111,7 +111,7 @@ pub async fn restore(
 // Automatische Sicherung
 // ---------------------------------------------------------------------------
 
-pub async fn get_auto(State(st): State<AppState>, _admin: AdminUser) -> ApiResult<Json<Value>> {
+pub async fn get_auto(State(st): State<AppState>, _admin: Need<perm::BackupManage>) -> ApiResult<Json<Value>> {
     let cfg = backup::load_auto(&st.db).await;
     let files = backup::list_files(&st).await;
     Ok(Json(json!({
@@ -133,7 +133,8 @@ pub struct AutoRequest {
     password: Option<String>,
 }
 
-pub async fn set_auto(State(st): State<AppState>, AdminUser(user): AdminUser, Json(req): Json<AutoRequest>) -> ApiResult<Json<Value>> {
+pub async fn set_auto(State(st): State<AppState>, Need(user, _): Need<perm::BackupManage>, Json(req): Json<AutoRequest>) -> ApiResult<Json<Value>> {
+    user.require_recent_auth(&st.db).await?;
     if req.hour > 23 || !(1..=365).contains(&req.keep) {
         return Err(ApiError::BadRequest("Uhrzeit 0–23 und 1–365 Sicherungen".into()));
     }
@@ -150,10 +151,10 @@ pub async fn set_auto(State(st): State<AppState>, AdminUser(user): AdminUser, Js
     cfg.keep = req.keep;
     backup::save_auto(&st.db, &cfg).await?;
     audit::by(&st.db, &user, "backup_auto", json!({ "enabled": cfg.enabled, "hour": cfg.hour, "keep": cfg.keep })).await;
-    get_auto(State(st), AdminUser(user)).await
+    get_auto(State(st), Need(user, std::marker::PhantomData)).await
 }
 
-pub async fn run_auto(State(st): State<AppState>, AdminUser(user): AdminUser) -> ApiResult<Json<Value>> {
+pub async fn run_auto(State(st): State<AppState>, Need(user, _): Need<perm::BackupManage>) -> ApiResult<Json<Value>> {
     let cfg = backup::load_auto(&st.db).await;
     let password: String = cfg
         .password_sealed
@@ -165,7 +166,8 @@ pub async fn run_auto(State(st): State<AppState>, AdminUser(user): AdminUser) ->
     Ok(Json(json!({ "ok": true, "file": name })))
 }
 
-pub async fn get_file(State(st): State<AppState>, AdminUser(user): AdminUser, Path(name): Path<String>) -> ApiResult<Response> {
+pub async fn get_file(State(st): State<AppState>, Need(user, _): Need<perm::BackupManage>, Path(name): Path<String>) -> ApiResult<Response> {
+    user.require_recent_auth(&st.db).await?;
     if !backup::valid_name(&name) {
         return Err(ApiError::NotFound);
     }
@@ -174,7 +176,7 @@ pub async fn get_file(State(st): State<AppState>, AdminUser(user): AdminUser, Pa
     Ok(download(&name, body))
 }
 
-pub async fn delete_file(State(st): State<AppState>, AdminUser(user): AdminUser, Path(name): Path<String>) -> ApiResult<Json<Value>> {
+pub async fn delete_file(State(st): State<AppState>, Need(user, _): Need<perm::BackupManage>, Path(name): Path<String>) -> ApiResult<Json<Value>> {
     if !backup::valid_name(&name) {
         return Err(ApiError::NotFound);
     }

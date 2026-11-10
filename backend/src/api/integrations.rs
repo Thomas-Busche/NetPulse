@@ -13,7 +13,7 @@ use sqlx::FromRow;
 
 use crate::{
     audit,
-    auth::{self, AdminUser},
+    auth::{self, perm, Need},
     error::{ApiError, ApiResult},
     integration::{self, Context, Match, Subject},
     AppState,
@@ -395,7 +395,7 @@ async fn integration_json(st: &AppState, r: Row) -> ApiResult<Value> {
 const ROW_SELECT: &str = "SELECT id, name, kind, token_hint, host_device_id, enabled, inventory, inventory_at, last_seen_at, last_ip,
                                  version, created_at FROM integrations";
 
-pub async fn list(State(st): State<AppState>, AdminUser(_user): AdminUser) -> ApiResult<Json<Value>> {
+pub async fn list(State(st): State<AppState>, Need(_user, _): Need<perm::SettingsManage>) -> ApiResult<Json<Value>> {
     let rows: Vec<Row> = sqlx::query_as(&format!("{ROW_SELECT} ORDER BY name")).fetch_all(&st.db).await?;
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
@@ -412,7 +412,7 @@ pub struct CreateInput {
 }
 
 /// Neues Programm verbinden – der Schlüssel wird nur in dieser Antwort gezeigt
-pub async fn create(State(st): State<AppState>, AdminUser(user): AdminUser, Json(req): Json<CreateInput>) -> ApiResult<Json<Value>> {
+pub async fn create(State(st): State<AppState>, Need(user, _): Need<perm::SettingsManage>, Json(req): Json<CreateInput>) -> ApiResult<Json<Value>> {
     let name: String = req.name.trim().chars().take(100).collect();
     if name.is_empty() {
         return Err(ApiError::BadRequest("Bitte einen Namen angeben".into()));
@@ -439,7 +439,7 @@ pub async fn create(State(st): State<AppState>, AdminUser(user): AdminUser, Json
 /// Ändern: name, enabled, host_device_id (null = keiner)
 pub async fn update(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::SettingsManage>,
     Path(id): Path<i64>,
     Json(req): Json<Value>,
 ) -> ApiResult<Json<Value>> {
@@ -465,7 +465,7 @@ pub async fn update(
 }
 
 /// Neuen Schlüssel erzeugen (der alte wird sofort ungültig)
-pub async fn new_token(State(st): State<AppState>, AdminUser(user): AdminUser, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+pub async fn new_token(State(st): State<AppState>, Need(user, _): Need<perm::SettingsManage>, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
     let (token, hash, hint) = integration::new_token();
     let done = sqlx::query("UPDATE integrations SET token_hash = $2, token_hint = $3 WHERE id = $1")
         .bind(id)
@@ -480,7 +480,7 @@ pub async fn new_token(State(st): State<AppState>, AdminUser(user): AdminUser, P
     Ok(Json(json!({ "token": token, "token_hint": hint })))
 }
 
-pub async fn remove(State(st): State<AppState>, AdminUser(user): AdminUser, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+pub async fn remove(State(st): State<AppState>, Need(user, _): Need<perm::SettingsManage>, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
     let (name,): (String,) = sqlx::query_as("DELETE FROM integrations WHERE id = $1 RETURNING name")
         .bind(id)
         .fetch_optional(&st.db)
@@ -503,7 +503,7 @@ pub struct LinkInput {
 /// Zuordnung eines Containers von Hand festlegen (leer + auto = wieder nur automatisch)
 pub async fn set_link(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::SettingsManage>,
     Path(id): Path<i64>,
     Json(req): Json<LinkInput>,
 ) -> ApiResult<Json<Value>> {
@@ -536,7 +536,7 @@ pub async fn set_link(
 }
 
 /// Pause von Hand sofort beenden
-pub async fn stop_pause(State(st): State<AppState>, AdminUser(user): AdminUser, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+pub async fn stop_pause(State(st): State<AppState>, Need(user, _): Need<perm::SettingsManage>, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
     let done = sqlx::query("UPDATE integration_pauses SET until = now(), ended_at = COALESCE(ended_at, now()) WHERE id = $1 AND until > now()")
         .bind(id)
         .execute(&st.db)
@@ -563,7 +563,7 @@ pub struct ActivePause {
 }
 
 /// Aktive Pausen (für Hinweise in Dashboard, Geräten und Diensten)
-pub async fn active_pauses(State(st): State<AppState>, _user: auth::CurrentUser) -> ApiResult<Json<Vec<ActivePause>>> {
+pub async fn active_pauses(State(st): State<AppState>, _user: Need<perm::View>) -> ApiResult<Json<Vec<ActivePause>>> {
     Ok(Json(
         sqlx::query_as(
             "SELECT p.id, COALESCE(i.name, '–') AS source, p.subjects, p.reason, p.until, p.ended_at IS NOT NULL AS finishing,

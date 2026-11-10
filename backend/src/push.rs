@@ -193,12 +193,12 @@ fn explain(status: reqwest::StatusCode, body: &str, endpoint: &str) -> String {
     format!("{service} antwortete {status}{hint}{}", if body.is_empty() { String::new() } else { format!(" ({body})") })
 }
 
-/// An alle angemeldeten Geräte senden (oder nur an die eines Benutzers).
+/// An alle angemeldeten Geräte senden (oder nur an die der genannten Benutzer).
 /// Abgelaufene Anmeldungen werden gelöscht, Fehler je Gerät gespeichert.
-pub async fn send(state: &AppState, user_id: Option<i64>, message: &PushMessage<'_>) -> Result<PushResult> {
+pub async fn send(state: &AppState, users: Option<&[i64]>, message: &PushMessage<'_>) -> Result<PushResult> {
     let subs: Vec<Subscription> =
-        sqlx::query_as("SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE $1::bigint IS NULL OR user_id = $1")
-            .bind(user_id)
+        sqlx::query_as("SELECT id, endpoint, p256dh, auth FROM push_subscriptions WHERE $1::bigint[] IS NULL OR user_id = ANY($1)")
+            .bind(users)
             .fetch_all(&state.db)
             .await?;
     let payload = serde_json::to_vec(message)?;

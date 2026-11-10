@@ -921,10 +921,12 @@ async fn apply_clients(state: &AppState, device_id: i64, clients: &[Value]) -> R
             "UPDATE devices d SET mac = u.mac
                FROM UNNEST($1::text[], $2::text[]) AS u(mac, ip)
               WHERE d.mac IS NULL AND d.ip = u.ip::inet
-                AND NOT EXISTS (SELECT 1 FROM devices x WHERE lower(x.mac) = u.mac)",
+                AND d.site_id = (SELECT site_id FROM devices WHERE id = $3)
+                AND NOT EXISTS (SELECT 1 FROM devices x WHERE lower(x.mac) = u.mac AND x.site_id = d.site_id)",
         )
         .bind(&ip_macs)
         .bind(&ips)
+        .bind(device_id)
         .execute(&state.db)
         .await?;
     }

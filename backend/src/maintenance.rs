@@ -25,10 +25,12 @@ pub struct Window {
     pub device_ids: Vec<i64>,
     pub check_ids: Vec<i64>,
     pub enabled: bool,
+    /// Ganze Sektoren (inkl. Unter-Sektoren)
+    pub site_ids: Vec<i64>,
 }
 
 pub const SELECT: &str =
-    "SELECT id, name, kind, starts_at, ends_at, days, time_from, time_to, device_ids, check_ids, enabled FROM maintenance_windows";
+    "SELECT id, name, kind, starts_at, ends_at, days, time_from, time_to, device_ids, check_ids, enabled, site_ids FROM maintenance_windows";
 
 fn parse(t: &Option<String>) -> Option<NaiveTime> {
     NaiveTime::parse_from_str(t.as_deref()?.trim(), "%H:%M").ok()
@@ -59,9 +61,12 @@ impl Window {
         }
     }
 
-    pub fn covers(&self, device_id: Option<i64>, check_id: Option<i64>) -> bool {
-        let all = self.device_ids.is_empty() && self.check_ids.is_empty();
-        all || device_id.is_some_and(|d| self.device_ids.contains(&d)) || check_id.is_some_and(|c| self.check_ids.contains(&c))
+    /// `sites`: Sektor des Geräts/Dienstes und alle übergeordneten Sektoren
+    pub fn covers(&self, device_id: Option<i64>, check_id: Option<i64>, sites: &[i64]) -> bool {
+        let all = self.device_ids.is_empty() && self.check_ids.is_empty() && self.site_ids.is_empty();
+        all || device_id.is_some_and(|d| self.device_ids.contains(&d))
+            || check_id.is_some_and(|c| self.check_ids.contains(&c))
+            || sites.iter().any(|s| self.site_ids.contains(s))
     }
 }
 
@@ -73,7 +78,29 @@ pub async fn load(db: &PgPool) -> Vec<Window> {
 pub async fn active_for(db: &PgPool, device_id: Option<i64>, check_id: Option<i64>) -> Option<String> {
     let now = Utc::now();
     let tz = crate::scanner::schedule::timezone();
-    load(db).await.into_iter().find(|w| w.active_at(now, tz) && w.covers(device_id, check_id)).map(|w| w.name)
+    let active: Vec<Window> = load(db).await.into_iter().filter(|w| w.active_at(now, tz)).collect();
+    if active.is_empty() {
+        return None;
+    }
+    let sites = if active.iter().any(|w| !w.site_ids.is_empty()) { site_chain(db, device_id, check_id).await } else { vec![] };
+    active.into_iter().find(|w| w.covers(device_id, check_id, &sites)).map(|w| w.name)
+}
+
+/// Sektor eines Geräts/Dienstes und alle übergeordneten Sektoren
+async fn site_chain(db: &PgPool, device_id: Option<i64>, check_id: Option<i64>) -> Vec<i64> {
+    sqlx::query_scalar::<_, i64>(
+        "WITH RECURSIVE up(id, depth) AS (
+             SELECT COALESCE((SELECT site_id FROM devices WHERE id = $1), (SELECT site_id FROM checks WHERE id = $2)), 0
+           UNION ALL
+             SELECT s.parent_id, up.depth + 1 FROM up JOIN sites s ON s.id = up.id WHERE s.parent_id IS NOT NULL AND up.depth < 20
+         )
+         SELECT id FROM up WHERE id IS NOT NULL",
+    )
+    .bind(device_id)
+    .bind(check_id)
+    .fetch_all(db)
+    .await
+    .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -93,6 +120,7 @@ mod tests {
             device_ids: vec![5],
             check_ids: vec![],
             enabled: true,
+            site_ids: vec![],
         }
     }
 
@@ -107,7 +135,12 @@ mod tests {
         assert!(w.active_at(fri_0130, tz), "über Mitternacht bis Freitag 02:00");
         assert!(!weekly(vec![5], "23:00", "02:00").active_at(thu_2330, tz));
         assert!(weekly(vec![4], "20:00", "23:45").active_at(thu_2330, tz));
-        assert!(w.covers(Some(5), None) && !w.covers(Some(6), None));
+        assert!(w.covers(Some(5), None, &[]) && !w.covers(Some(6), None, &[]));
+        let mut site = weekly(vec![4], "23:00", "02:00");
+        site.device_ids.clear();
+        site.site_ids = vec![3];
+        assert!(site.covers(Some(9), None, &[7, 3, 1]), "Unter-Sektor von 3");
+        assert!(!site.covers(Some(9), None, &[1]));
     }
 
     #[test]
@@ -119,6 +152,6 @@ mod tests {
         assert!(w.active_at("2026-09-24T11:00:00Z".parse().unwrap(), chrono_tz::UTC));
         assert!(!w.active_at("2026-09-24T12:00:00Z".parse().unwrap(), chrono_tz::UTC));
         w.device_ids.clear();
-        assert!(w.covers(Some(99), None), "leere Listen gelten für alles");
+        assert!(w.covers(Some(99), None, &[]), "leere Listen gelten für alles");
     }
 }

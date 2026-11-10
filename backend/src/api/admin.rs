@@ -1,4 +1,4 @@
-//! Verwaltung: Netze, Scans, Benutzer, Audit-Log. Alles hier erfordert die Rolle „admin“.
+//! Verwaltung: Netze, Scans, Audit-Log, Wartung, Protokolle, Sicherheit. Rechte je Handler (`Need<perm::…>`).
 
 use axum::{
     extract::{Path, Query, State},
@@ -11,7 +11,7 @@ use sqlx::FromRow;
 
 use crate::{
     audit,
-    auth::{self, AdminUser, CurrentUser},
+    auth::{perm, CurrentUser, Need},
     error::{ApiError, ApiResult},
     scanner::{self, ScanRequest},
     AppState,
@@ -32,15 +32,25 @@ pub struct Network {
     last_scan_found: Option<i32>,
     last_scan_duration_s: Option<i32>,
     device_count: i64,
+    site_id: i64,
+    site_name: String,
+    vlan_id: Option<i32>,
+    gateway: Option<String>,
+    description: String,
+    schedule: Option<Value>,
+    /// Wird von einer Probe im Sektor gescannt
+    probe: Option<String>,
 }
 
 const NETWORK_SELECT: &str = "SELECT n.id, n.cidr::text AS cidr, n.name, n.enabled, n.created_at,
                                      n.last_scan_at, n.last_scan_found, n.last_scan_duration_s,
-                                     (SELECT count(*) FROM devices d WHERE d.ip << n.cidr) AS device_count
-                                FROM networks n";
+                                     (SELECT count(*) FROM devices d WHERE d.ip << n.cidr AND d.site_id = n.site_id) AS device_count,
+                                     n.site_id, s.name AS site_name, n.vlan_id, host(n.gateway) AS gateway, n.description, n.schedule,
+                                     (SELECT p.name FROM probes p WHERE p.site_id = n.site_id AND p.enabled) AS probe
+                                FROM networks n JOIN sites s ON s.id = n.site_id";
 
-pub async fn list_networks(State(st): State<AppState>, _admin: AdminUser) -> ApiResult<Json<Vec<Network>>> {
-    let sql = format!("{NETWORK_SELECT} ORDER BY n.cidr");
+pub async fn list_networks(State(st): State<AppState>, _admin: Need<perm::NetworksManage>) -> ApiResult<Json<Vec<Network>>> {
+    let sql = format!("{NETWORK_SELECT} ORDER BY s.name, n.cidr");
     Ok(Json(sqlx::query_as::<_, Network>(&sql).fetch_all(&st.db).await?))
 }
 
@@ -48,11 +58,38 @@ pub async fn list_networks(State(st): State<AppState>, _admin: AdminUser) -> Api
 pub struct NewNetwork {
     cidr: String,
     name: String,
+    #[serde(default)]
+    site_id: Option<i64>,
+    #[serde(default)]
+    vlan_id: Option<i32>,
+    #[serde(default)]
+    gateway: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    /// Eigener Such-Zeitplan; `null` = globaler Zeitplan
+    #[serde(default)]
+    schedule: Option<scanner::schedule::Schedule>,
+}
+
+fn validate_network_fields(req: &NewNetwork) -> ApiResult<()> {
+    if req.vlan_id.is_some_and(|v| !(1..=4094).contains(&v)) {
+        return Err(ApiError::BadRequest("VLAN-ID muss zwischen 1 und 4094 liegen".into()));
+    }
+    if let Some(gw) = req.gateway.as_deref().map(str::trim).filter(|g| !g.is_empty()) {
+        gw.parse::<std::net::IpAddr>().map_err(|_| ApiError::BadRequest("Gateway ist keine gültige IP-Adresse".into()))?;
+    }
+    if req.description.as_deref().is_some_and(|d| d.chars().count() > 500) {
+        return Err(ApiError::BadRequest("Beschreibung darf höchstens 500 Zeichen haben".into()));
+    }
+    if let Some(plan) = &req.schedule {
+        plan.validate().map_err(ApiError::BadRequest)?;
+    }
+    Ok(())
 }
 
 pub async fn add_network(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::NetworksManage>,
     Json(req): Json<NewNetwork>,
 ) -> ApiResult<Json<Network>> {
     let (addr, prefix) =
@@ -61,26 +98,102 @@ pub async fn add_network(
     if name.is_empty() || name.chars().count() > 100 {
         return Err(ApiError::BadRequest("Bitte einen Namen (max. 100 Zeichen) angeben".into()));
     }
+    validate_network_fields(&req)?;
+    let site_id = req.site_id.unwrap_or(crate::sites::DEFAULT_SITE);
     let cidr = format!("{addr}/{prefix}");
     let (id,): (i64,) = sqlx::query_as(
-        "INSERT INTO networks (cidr, name) VALUES ($1::cidr, $2) ON CONFLICT (cidr) DO NOTHING RETURNING id",
+        "INSERT INTO networks (cidr, name, site_id, vlan_id, gateway, description, schedule)
+         SELECT $1::cidr, $2, s.id, $4, NULLIF(trim($5), '')::inet, COALESCE($6, ''), $7 FROM sites s WHERE s.id = $3
+         ON CONFLICT (site_id, cidr) DO NOTHING RETURNING id",
     )
     .bind(&cidr)
     .bind(name)
+    .bind(site_id)
+    .bind(req.vlan_id)
+    .bind(req.gateway.as_deref().unwrap_or(""))
+    .bind(req.description.as_deref().map(str::trim))
+    .bind(req.schedule.as_ref().map(|s| json!(s)))
     .fetch_optional(&st.db)
     .await?
-    .ok_or_else(|| ApiError::BadRequest(format!("Netz {cidr} ist bereits eingetragen")))?;
+    .ok_or_else(|| ApiError::BadRequest(format!("Netz {cidr} ist in diesem Sektor bereits eingetragen (oder der Sektor fehlt)")))?;
 
-    audit::by(&st.db, &user, "network_add", json!({ "cidr": cidr, "name": name })).await;
+    audit::by(&st.db, &user, "network_add", json!({ "cidr": cidr, "name": name, "site_id": site_id })).await;
     // Neues Netz sofort scannen – hat Vorrang vor einem laufenden Durchlauf
     let _ = st.scan_tx.send(ScanRequest::Network(id));
     let sql = format!("{NETWORK_SELECT} WHERE n.id = $1");
     Ok(Json(sqlx::query_as::<_, Network>(&sql).bind(id).fetch_one(&st.db).await?))
 }
 
+/// Name, Sektor, VLAN, Gateway, Beschreibung, Zeitplan und „aktiv“ ändern (die Adresse selbst bleibt)
+#[derive(Deserialize)]
+pub struct NetworkUpdate {
+    name: Option<String>,
+    enabled: Option<bool>,
+    site_id: Option<i64>,
+    vlan_id: Option<i32>,
+    gateway: Option<String>,
+    description: Option<String>,
+    /// `true` = Zeitplan auf global zurücksetzen
+    #[serde(default)]
+    schedule_global: bool,
+    schedule: Option<scanner::schedule::Schedule>,
+}
+
+pub async fn update_network(
+    State(st): State<AppState>,
+    Need(user, _): Need<perm::NetworksManage>,
+    Path(id): Path<i64>,
+    Json(req): Json<NetworkUpdate>,
+) -> ApiResult<Json<Network>> {
+    if req.name.as_deref().is_some_and(|n| n.trim().is_empty() || n.chars().count() > 100) {
+        return Err(ApiError::BadRequest("Bitte einen Namen (max. 100 Zeichen) angeben".into()));
+    }
+    validate_network_fields(&NewNetwork {
+        cidr: String::new(),
+        name: String::new(),
+        site_id: None,
+        vlan_id: req.vlan_id.filter(|v| *v != 0),
+        gateway: req.gateway.clone(),
+        description: req.description.clone(),
+        schedule: req.schedule.clone(),
+    })?;
+    let done = sqlx::query(
+        "UPDATE networks SET
+             name        = COALESCE(NULLIF(trim($2), ''), name),
+             enabled     = COALESCE($3, enabled),
+             site_id     = COALESCE((SELECT id FROM sites WHERE id = $4), site_id),
+             vlan_id     = CASE WHEN $5::int IS NULL THEN vlan_id WHEN $5 = 0 THEN NULL ELSE $5 END,
+             gateway     = CASE WHEN $6::text IS NULL THEN gateway ELSE NULLIF(trim($6), '')::inet END,
+             description = COALESCE(trim($7), description),
+             schedule    = CASE WHEN $8 THEN NULL WHEN $9::jsonb IS NULL THEN schedule ELSE $9 END
+          WHERE id = $1",
+    )
+    .bind(id)
+    .bind(&req.name)
+    .bind(req.enabled)
+    .bind(req.site_id)
+    .bind(req.vlan_id)
+    .bind(&req.gateway)
+    .bind(&req.description)
+    .bind(req.schedule_global)
+    .bind(req.schedule.as_ref().map(|s| json!(s)))
+    .execute(&st.db)
+    .await
+    .map_err(|e| match &e {
+        sqlx::Error::Database(d) if d.is_unique_violation() => ApiError::BadRequest("Dieses Netz gibt es im Ziel-Sektor schon".into()),
+        _ => e.into(),
+    })?;
+    if done.rows_affected() == 0 {
+        return Err(ApiError::NotFound);
+    }
+    audit::by(&st.db, &user, "network_update", json!({ "network_id": id, "site_id": req.site_id, "enabled": req.enabled })).await;
+    let sql = format!("{NETWORK_SELECT} WHERE n.id = $1");
+    Ok(Json(sqlx::query_as::<_, Network>(&sql).bind(id).fetch_one(&st.db).await?))
+}
+
 pub async fn delete_network(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::NetworksManage>,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<Value>> {
     let (cidr,): (String,) = sqlx::query_as("DELETE FROM networks WHERE id = $1 RETURNING cidr::text")
@@ -92,7 +205,7 @@ pub async fn delete_network(
     Ok(Json(json!({ "ok": true })))
 }
 
-pub async fn trigger_scan(State(st): State<AppState>, AdminUser(user): AdminUser) -> ApiResult<Json<Value>> {
+pub async fn trigger_scan(State(st): State<AppState>, Need(user, _): Need<perm::NetworksManage>) -> ApiResult<Json<Value>> {
     let _ = st.scan_tx.send(ScanRequest::All);
     audit::by(&st.db, &user, "scan_trigger", json!({})).await;
     Ok(Json(json!({ "ok": true })))
@@ -100,7 +213,7 @@ pub async fn trigger_scan(State(st): State<AppState>, AdminUser(user): AdminUser
 
 pub async fn scan_network(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::NetworksManage>,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<Value>> {
     let _ = st.scan_tx.send(ScanRequest::Network(id));
@@ -110,98 +223,6 @@ pub async fn scan_network(
 
 pub async fn scan_status(State(st): State<AppState>, _user: CurrentUser) -> Json<Value> {
     Json(st.scan_progress.snapshot())
-}
-
-// ---------------------------------------------------------------------------
-// Benutzer
-// ---------------------------------------------------------------------------
-
-#[derive(Serialize, FromRow)]
-pub struct UserRow {
-    id: i64,
-    username: String,
-    role: String,
-    created_at: DateTime<Utc>,
-    last_login: Option<DateTime<Utc>>,
-    totp_enabled: bool,
-}
-
-pub async fn list_users(State(st): State<AppState>, _admin: AdminUser) -> ApiResult<Json<Vec<UserRow>>> {
-    let users = sqlx::query_as::<_, UserRow>(
-        "SELECT id, username, role, created_at, last_login, totp_enabled FROM users ORDER BY username",
-    )
-    .fetch_all(&st.db)
-    .await?;
-    Ok(Json(users))
-}
-
-#[derive(Deserialize)]
-pub struct NewUser {
-    username: String,
-    password: String,
-    role: String,
-}
-
-pub async fn add_user(
-    State(st): State<AppState>,
-    AdminUser(admin): AdminUser,
-    Json(req): Json<NewUser>,
-) -> ApiResult<Json<UserRow>> {
-    let username = req.username.trim().to_lowercase();
-    let valid_name = (3..=32).contains(&username.len())
-        && username.chars().all(|c| c.is_ascii_alphanumeric() || "._-".contains(c));
-    if !valid_name {
-        return Err(ApiError::BadRequest(
-            "Benutzername: 3–32 Zeichen, erlaubt sind a–z, 0–9, Punkt, Minus, Unterstrich".into(),
-        ));
-    }
-    if req.role != "admin" && req.role != "viewer" {
-        return Err(ApiError::BadRequest("Rolle muss 'admin' oder 'viewer' sein".into()));
-    }
-    auth::validate_password(&req.password).map_err(ApiError::BadRequest)?;
-
-    let hash = auth::hash_password(req.password).await?;
-    let user = sqlx::query_as::<_, UserRow>(
-        "INSERT INTO users (username, password_hash, role) VALUES ($1, $2, $3)
-         ON CONFLICT (username) DO NOTHING
-         RETURNING id, username, role, created_at, last_login, totp_enabled",
-    )
-    .bind(&username)
-    .bind(hash)
-    .bind(&req.role)
-    .fetch_optional(&st.db)
-    .await?
-    .ok_or_else(|| ApiError::BadRequest(format!("Benutzer '{username}' existiert bereits")))?;
-
-    audit::by(&st.db, &admin, "user_add", json!({ "username": username, "role": req.role })).await;
-    Ok(Json(user))
-}
-
-pub async fn delete_user(
-    State(st): State<AppState>,
-    AdminUser(admin): AdminUser,
-    Path(id): Path<i64>,
-) -> ApiResult<Json<Value>> {
-    if id == admin.id {
-        return Err(ApiError::BadRequest("Das eigene Konto kann nicht gelöscht werden".into()));
-    }
-    // Sicherstellen, dass immer mindestens ein Admin übrig bleibt
-    let target: (String, String) = sqlx::query_as("SELECT username, role FROM users WHERE id = $1")
-        .bind(id)
-        .fetch_optional(&st.db)
-        .await?
-        .ok_or(ApiError::NotFound)?;
-    if target.1 == "admin" {
-        let (admins,): (i64,) = sqlx::query_as("SELECT count(*) FROM users WHERE role = 'admin'")
-            .fetch_one(&st.db)
-            .await?;
-        if admins <= 1 {
-            return Err(ApiError::BadRequest("Der letzte Admin kann nicht gelöscht werden".into()));
-        }
-    }
-    sqlx::query("DELETE FROM users WHERE id = $1").bind(id).execute(&st.db).await?;
-    audit::by(&st.db, &admin, "user_delete", json!({ "username": target.0 })).await;
-    Ok(Json(json!({ "ok": true })))
 }
 
 // ---------------------------------------------------------------------------
@@ -220,18 +241,39 @@ pub struct AuditEntry {
 #[derive(Deserialize)]
 pub struct AuditQuery {
     limit: Option<i64>,
+    /// Benutzername (genau)
+    user: Option<String>,
+    /// Aktion beginnt mit … (z. B. „login“, „device_“)
+    action: Option<String>,
+    /// Suchtext in den Details
+    q: Option<String>,
+    /// Nur Einträge zu Geräten/Netzen dieses Sektors
+    site: Option<i64>,
 }
 
 pub async fn audit_log(
     State(st): State<AppState>,
-    _admin: AdminUser,
+    _admin: Need<perm::AuditView>,
     Query(q): Query<AuditQuery>,
 ) -> ApiResult<Json<Vec<AuditEntry>>> {
     let limit = q.limit.unwrap_or(200).clamp(1, 1000);
+    let like = |v: &Option<String>| {
+        v.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(|t| t.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_"))
+    };
     let entries = sqlx::query_as::<_, AuditEntry>(
-        "SELECT id, time, username, action, detail FROM audit_log ORDER BY time DESC LIMIT $1",
+        "SELECT a.id, a.time, a.username, a.action, a.detail FROM audit_log a
+          WHERE ($2::text IS NULL OR a.username = lower($2))
+            AND ($3::text IS NULL OR a.action LIKE $3 || '%')
+            AND ($4::text IS NULL OR a.detail::text ILIKE '%' || $4 || '%')
+            AND ($5::bigint IS NULL OR (a.detail->>'site_id')::bigint = $5
+                 OR (a.detail->>'device_id')::bigint IN (SELECT id FROM devices WHERE site_id = $5))
+          ORDER BY a.time DESC LIMIT $1",
     )
     .bind(limit)
+    .bind(q.user.as_deref().map(str::trim).filter(|t| !t.is_empty()))
+    .bind(like(&q.action))
+    .bind(like(&q.q))
+    .bind(q.site)
     .fetch_all(&st.db)
     .await?;
     Ok(Json(entries))
@@ -250,13 +292,13 @@ async fn discovery_view(st: &AppState) -> Value {
     json!({ "schedule": plan, "last_run": last, "next_run": next, "timezone": tz.name() })
 }
 
-pub async fn get_discovery(State(st): State<AppState>, _admin: AdminUser) -> Json<Value> {
+pub async fn get_discovery(State(st): State<AppState>, _admin: Need<perm::NetworksManage>) -> Json<Value> {
     Json(discovery_view(&st).await)
 }
 
 pub async fn set_discovery(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::NetworksManage>,
     Json(mut plan): Json<scanner::schedule::Schedule>,
 ) -> ApiResult<Json<Value>> {
     plan.times = plan.times.iter().map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect();
@@ -279,7 +321,7 @@ pub struct LogQuery {
     limit: Option<usize>,
 }
 
-pub async fn system_log(_admin: AdminUser, Query(q): Query<LogQuery>) -> Json<Vec<crate::logbuf::LogLine>> {
+pub async fn system_log(_admin: Need<perm::AuditView>, Query(q): Query<LogQuery>) -> Json<Vec<crate::logbuf::LogLine>> {
     Json(crate::logbuf::recent(
         q.level.as_deref().unwrap_or("info"),
         q.q.as_deref().unwrap_or("").trim(),
@@ -297,7 +339,7 @@ pub async fn get_live(State(st): State<AppState>, _user: CurrentUser) -> Json<cr
 
 pub async fn set_live(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::SettingsManage>,
     Json(settings): Json<crate::collect::fast::LiveSettings>,
 ) -> ApiResult<Json<crate::collect::fast::LiveSettings>> {
     settings.validate().map_err(ApiError::BadRequest)?;
@@ -306,26 +348,11 @@ pub async fn set_live(
     Ok(Json(settings))
 }
 
-/// Zwei-Faktor-Anmeldung eines Benutzers zurücksetzen (z. B. Handy verloren)
-pub async fn reset_totp(State(st): State<AppState>, AdminUser(admin): AdminUser, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
-    let target: Option<(String,)> = sqlx::query_as(
-        "UPDATE users SET totp_enabled = false, totp_secret = NULL, totp_last_step = NULL WHERE id = $1 RETURNING username",
-    )
-    .bind(id)
-    .fetch_optional(&st.db)
-    .await?;
-    let (username,) = target.ok_or(ApiError::NotFound)?;
-    // Handy verloren: auch alle Sitzungen dieses Benutzers beenden
-    sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(id).execute(&st.db).await?;
-    audit::by(&st.db, &admin, "totp_reset", json!({ "username": username })).await;
-    Ok(Json(json!({ "ok": true })))
-}
-
 // ---------------------------------------------------------------------------
 // Systemzustand (CPU, RAM, Dauer der Aufgaben)
 // ---------------------------------------------------------------------------
 
-pub async fn system(State(st): State<AppState>, _admin: AdminUser) -> ApiResult<Json<Value>> {
+pub async fn system(State(st): State<AppState>, _admin: Need<perm::AuditView>) -> ApiResult<Json<Value>> {
     let (db_mb, devices, monitored, shellys, checks): (f64, i64, i64, i64, i64) = sqlx::query_as(
         "SELECT pg_database_size(current_database())::float8 / 1048576,
                 (SELECT count(*) FROM devices), (SELECT count(*) FROM devices WHERE monitored),
@@ -354,9 +381,19 @@ pub async fn system(State(st): State<AppState>, _admin: AdminUser) -> ApiResult<
 // Wartungsfenster
 // ---------------------------------------------------------------------------
 
-pub async fn list_maintenance(State(st): State<AppState>, _user: CurrentUser) -> ApiResult<Json<Value>> {
-    let windows: Vec<crate::maintenance::Window> =
+pub async fn list_maintenance(State(st): State<AppState>, user: Need<perm::View>) -> ApiResult<Json<Value>> {
+    let mut windows: Vec<crate::maintenance::Window> =
         sqlx::query_as(&format!("{} ORDER BY enabled DESC, name", crate::maintenance::SELECT)).fetch_all(&st.db).await?;
+    // Eingeschränkte Benutzer sehen nur Fenster, die ausschließlich ihre Sektoren betreffen
+    if let Some(allowed) = user.site_filter("view") {
+        let mut keep = Vec::new();
+        for w in windows {
+            if maintenance_scope_ok(&st, &allowed, &w.device_ids, &w.check_ids, &w.site_ids).await? {
+                keep.push(w);
+            }
+        }
+        windows = keep;
+    }
     let now = Utc::now();
     let tz = scanner::schedule::timezone();
     let list: Vec<Value> = windows
@@ -369,10 +406,40 @@ pub async fn list_maintenance(State(st): State<AppState>, _user: CurrentUser) ->
         .collect();
     // Für die Oberfläche: was ist gerade in Wartung?
     let active: Vec<&crate::maintenance::Window> = windows.iter().filter(|w| w.active_at(now, tz)).collect();
-    let all = active.iter().any(|w| w.device_ids.is_empty() && w.check_ids.is_empty());
+    let all = active.iter().any(|w| w.device_ids.is_empty() && w.check_ids.is_empty() && w.site_ids.is_empty());
     let device_ids: Vec<i64> = active.iter().flat_map(|w| w.device_ids.clone()).collect();
     let check_ids: Vec<i64> = active.iter().flat_map(|w| w.check_ids.clone()).collect();
-    Ok(Json(json!({ "windows": list, "active": { "all": all, "device_ids": device_ids, "check_ids": check_ids } })))
+    let site_ids: Vec<i64> = active.iter().flat_map(|w| w.site_ids.clone()).collect();
+    Ok(Json(json!({ "windows": list, "active": { "all": all, "device_ids": device_ids, "check_ids": check_ids, "site_ids": site_ids } })))
+}
+
+/// Liegen alle betroffenen Geräte, Dienste und Sektoren in den erlaubten Sektoren?
+/// Ein Fenster ohne Auswahl gilt für alles – das dürfen nur Benutzer mit Recht in allen Sektoren.
+async fn maintenance_scope_ok(st: &AppState, allowed: &[i64], devices: &[i64], checks: &[i64], sites: &[i64]) -> ApiResult<bool> {
+    if devices.is_empty() && checks.is_empty() && sites.is_empty() {
+        return Ok(false);
+    }
+    if sites.iter().any(|s| !allowed.contains(s)) {
+        return Ok(false);
+    }
+    let (outside,): (i64,) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM devices WHERE id = ANY($1) AND NOT site_id = ANY($3))
+              + (SELECT count(*) FROM checks WHERE id = ANY($2) AND (site_id IS NULL OR NOT site_id = ANY($3)))",
+    )
+    .bind(devices)
+    .bind(checks)
+    .bind(allowed)
+    .fetch_one(&st.db)
+    .await?;
+    Ok(outside == 0)
+}
+
+async fn require_maintenance_scope(st: &AppState, user: &CurrentUser, devices: &[i64], checks: &[i64], sites: &[i64]) -> ApiResult<()> {
+    match user.site_filter("maintenance.manage") {
+        None => Ok(()),
+        Some(allowed) if maintenance_scope_ok(st, &allowed, devices, checks, sites).await? => Ok(()),
+        Some(_) => Err(ApiError::BadRequest("Wartungsfenster dürfen nur Geräte, Dienste und Sektoren betreffen, für die du zuständig bist".into())),
+    }
 }
 
 #[derive(Deserialize, Serialize)]
@@ -389,6 +456,8 @@ pub struct MaintenanceInput {
     device_ids: Vec<i64>,
     #[serde(default)]
     check_ids: Vec<i64>,
+    #[serde(default)]
+    site_ids: Vec<i64>,
     enabled: Option<bool>,
 }
 
@@ -417,13 +486,14 @@ fn validate_maintenance(m: &MaintenanceInput) -> ApiResult<()> {
 
 pub async fn create_maintenance(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::MaintenanceManage>,
     Json(m): Json<MaintenanceInput>,
 ) -> ApiResult<Json<Value>> {
     validate_maintenance(&m)?;
+    require_maintenance_scope(&st, &user, &m.device_ids, &m.check_ids, &m.site_ids).await?;
     let (id,): (i64,) = sqlx::query_as(
-        "INSERT INTO maintenance_windows (name, kind, starts_at, ends_at, days, time_from, time_to, device_ids, check_ids, enabled)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id",
+        "INSERT INTO maintenance_windows (name, kind, starts_at, ends_at, days, time_from, time_to, device_ids, check_ids, enabled, site_ids)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) RETURNING id",
     )
     .bind(m.name.trim())
     .bind(&m.kind)
@@ -435,6 +505,7 @@ pub async fn create_maintenance(
     .bind(&m.device_ids)
     .bind(&m.check_ids)
     .bind(m.enabled.unwrap_or(true))
+    .bind(&m.site_ids)
     .fetch_one(&st.db)
     .await?;
     audit::by(&st.db, &user, "maintenance_add", json!({ "id": id, "window": m })).await;
@@ -443,14 +514,16 @@ pub async fn create_maintenance(
 
 pub async fn update_maintenance(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::MaintenanceManage>,
     Path(id): Path<i64>,
     Json(m): Json<MaintenanceInput>,
 ) -> ApiResult<Json<Value>> {
     validate_maintenance(&m)?;
+    require_maintenance_scope(&st, &user, &m.device_ids, &m.check_ids, &m.site_ids).await?;
+    require_existing_window_scope(&st, &user, id).await?;
     let done = sqlx::query(
         "UPDATE maintenance_windows SET name = $2, kind = $3, starts_at = $4, ends_at = $5, days = $6, time_from = $7,
-                time_to = $8, device_ids = $9, check_ids = $10, enabled = COALESCE($11, enabled) WHERE id = $1",
+                time_to = $8, device_ids = $9, check_ids = $10, enabled = COALESCE($11, enabled), site_ids = $12 WHERE id = $1",
     )
     .bind(id)
     .bind(m.name.trim())
@@ -463,6 +536,7 @@ pub async fn update_maintenance(
     .bind(&m.device_ids)
     .bind(&m.check_ids)
     .bind(m.enabled)
+    .bind(&m.site_ids)
     .execute(&st.db)
     .await?;
     if done.rows_affected() == 0 {
@@ -472,7 +546,16 @@ pub async fn update_maintenance(
     Ok(Json(json!({ "ok": true })))
 }
 
-pub async fn delete_maintenance(State(st): State<AppState>, AdminUser(user): AdminUser, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+/// Bestehendes Fenster: darf der Benutzer es überhaupt ändern?
+async fn require_existing_window_scope(st: &AppState, user: &CurrentUser, id: i64) -> ApiResult<()> {
+    let row: Option<(Vec<i64>, Vec<i64>, Vec<i64>)> =
+        sqlx::query_as("SELECT device_ids, check_ids, site_ids FROM maintenance_windows WHERE id = $1").bind(id).fetch_optional(&st.db).await?;
+    let (devices, checks, sites) = row.ok_or(ApiError::NotFound)?;
+    require_maintenance_scope(st, user, &devices, &checks, &sites).await
+}
+
+pub async fn delete_maintenance(State(st): State<AppState>, Need(user, _): Need<perm::MaintenanceManage>, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+    require_existing_window_scope(&st, &user, id).await?;
     let (name,): (String,) = sqlx::query_as("DELETE FROM maintenance_windows WHERE id = $1 RETURNING name")
         .bind(id)
         .fetch_optional(&st.db)
@@ -511,7 +594,9 @@ pub struct RemoteLog {
     message: String,
 }
 
-pub async fn remote_logs(State(st): State<AppState>, _admin: AdminUser, Query(q): Query<RemoteLogQuery>) -> ApiResult<Json<Value>> {
+pub async fn remote_logs(State(st): State<AppState>, user: Need<perm::DevicesDiagnose>, Query(q): Query<RemoteLogQuery>) -> ApiResult<Json<Value>> {
+    // Meldungen ohne zugeordnetes Gerät sehen nur Benutzer mit dem Recht für alle Sektoren
+    let sites = user.site_filter("devices.diagnose");
     let text = q.q.as_deref().map(str::trim).filter(|t| !t.is_empty())
         .map(|t| format!("%{}%", t.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")));
     let rows = sqlx::query_as::<_, RemoteLog>(
@@ -523,6 +608,7 @@ pub async fn remote_logs(State(st): State<AppState>, _admin: AdminUser, Query(q)
             AND m.severity <= $3
             AND ($4::text IS NULL OR m.message ILIKE $4 OR m.app ILIKE $4 OR m.host ILIKE $4)
             AND ($5::text IS NULL OR ($5 = 'trap') = (m.app = 'snmp-trap'))
+            AND ($7::bigint[] IS NULL OR d.site_id = ANY($7))
           ORDER BY m.time DESC LIMIT $6",
     )
     .bind(q.hours.unwrap_or(24).clamp(1, 24 * 90))
@@ -531,6 +617,7 @@ pub async fn remote_logs(State(st): State<AppState>, _admin: AdminUser, Query(q)
     .bind(&text)
     .bind(q.source.as_deref().filter(|s| *s == "syslog" || *s == "trap"))
     .bind(q.limit.unwrap_or(500).clamp(1, 5000))
+    .bind(&sites)
     .fetch_all(&st.db)
     .await?;
     let (last_hour,): (i64,) = sqlx::query_as("SELECT count(*) FROM syslog_messages WHERE time > now() - interval '1 hour'")
@@ -546,7 +633,7 @@ pub async fn remote_logs(State(st): State<AppState>, _admin: AdminUser, Query(q)
 }
 
 /// Testmeldung an den eigenen Syslog-Empfang schicken
-pub async fn remote_logs_test(State(st): State<AppState>, _admin: AdminUser) -> ApiResult<Json<Value>> {
+pub async fn remote_logs_test(State(st): State<AppState>, _admin: Need<perm::SettingsManage>) -> ApiResult<Json<Value>> {
     if st.config.syslog_port == 0 {
         return Err(ApiError::BadRequest("Der Syslog-Empfang ist ausgeschaltet (SYSLOG_PORT=0)".into()));
     }
@@ -554,18 +641,11 @@ pub async fn remote_logs_test(State(st): State<AppState>, _admin: AdminUser) -> 
     Ok(Json(json!({ "ok": true })))
 }
 
-/// Alle Sitzungen eines Benutzers beenden (z. B. Handy verloren)
-pub async fn end_user_sessions(State(st): State<AppState>, AdminUser(admin): AdminUser, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
-    let done = sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(id).execute(&st.db).await?;
-    audit::by(&st.db, &admin, "sessions_revoked", json!({ "user_id": id, "count": done.rows_affected() })).await;
-    Ok(Json(json!({ "ended": done.rows_affected() })))
-}
-
 // ---------------------------------------------------------------------------
 // Sicherheit: 2FA-Pflicht
 // ---------------------------------------------------------------------------
 
-pub async fn get_security(State(st): State<AppState>, _admin: AdminUser) -> ApiResult<Json<Value>> {
+pub async fn get_security(State(st): State<AppState>, _admin: Need<perm::UsersManage>) -> ApiResult<Json<Value>> {
     let (without,): (i64,) = sqlx::query_as("SELECT count(*) FROM users WHERE NOT totp_enabled").fetch_one(&st.db).await?;
     Ok(Json(json!({
         "require_totp": crate::auth::totp_required(&st).await,
@@ -581,9 +661,10 @@ pub struct SecuritySettings {
 
 pub async fn set_security(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::UsersManage>,
     Json(req): Json<SecuritySettings>,
 ) -> ApiResult<Json<Value>> {
+    user.require_recent_auth(&st.db).await?;
     if st.config.require_totp && !req.require_totp {
         return Err(ApiError::BadRequest("Die 2FA-Pflicht ist über REQUIRE_TOTP fest eingeschaltet".into()));
     }
@@ -602,33 +683,5 @@ pub async fn set_security(
     .execute(&st.db)
     .await?;
     audit::by(&st.db, &user, "security_settings", json!({ "require_totp": req.require_totp })).await;
-    get_security(State(st), AdminUser(user)).await
-}
-
-/// Neues Passwort für einen anderen Benutzer (z. B. vergessen); alle seine Sitzungen werden beendet
-#[derive(Deserialize)]
-pub struct PasswordReset {
-    password: String,
-}
-
-pub async fn reset_user_password(
-    State(st): State<AppState>,
-    AdminUser(admin): AdminUser,
-    Path(id): Path<i64>,
-    Json(req): Json<PasswordReset>,
-) -> ApiResult<Json<Value>> {
-    if id == admin.id {
-        return Err(ApiError::BadRequest("Das eigene Passwort bitte unter „Mein Konto“ ändern".into()));
-    }
-    crate::auth::validate_password(&req.password).map_err(ApiError::BadRequest)?;
-    let hash = crate::auth::hash_password(req.password).await?;
-    let target: Option<(String,)> = sqlx::query_as("UPDATE users SET password_hash = $2 WHERE id = $1 RETURNING username")
-        .bind(id)
-        .bind(hash)
-        .fetch_optional(&st.db)
-        .await?;
-    let (username,) = target.ok_or(ApiError::NotFound)?;
-    sqlx::query("DELETE FROM sessions WHERE user_id = $1").bind(id).execute(&st.db).await?;
-    audit::by(&st.db, &admin, "password_reset", json!({ "username": username })).await;
-    Ok(Json(json!({ "ok": true })))
+    get_security(State(st), Need(user, std::marker::PhantomData)).await
 }

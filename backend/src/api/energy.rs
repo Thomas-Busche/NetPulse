@@ -12,19 +12,19 @@ use serde_json::{json, Value};
 
 use crate::{
     audit,
-    auth::{AdminUser, CurrentUser},
+    auth::{perm, Need},
     energy::{self, EnergySettings, Flow, Model},
     error::{ApiError, ApiResult},
     AppState,
 };
 
-pub async fn get_settings(State(st): State<AppState>, _user: CurrentUser) -> Json<EnergySettings> {
+pub async fn get_settings(State(st): State<AppState>, _user: Need<perm::View>) -> Json<EnergySettings> {
     Json(energy::load_settings(&st.db).await)
 }
 
 pub async fn set_settings(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::SettingsManage>,
     Json(settings): Json<EnergySettings>,
 ) -> ApiResult<Json<EnergySettings>> {
     settings.validate().map_err(ApiError::BadRequest)?;
@@ -47,7 +47,7 @@ pub struct ReportQuery {
     at: Option<String>,
 }
 
-pub async fn report(State(st): State<AppState>, _user: CurrentUser, Query(q): Query<ReportQuery>) -> ApiResult<Json<Value>> {
+pub async fn report(State(st): State<AppState>, _user: Need<perm::View>, Query(q): Query<ReportQuery>) -> ApiResult<Json<Value>> {
     let today = chrono::Utc::now().with_timezone(&crate::scanner::schedule::timezone()).date_naive();
     let range = q.range.as_deref().unwrap_or("month");
     let bad = || ApiError::BadRequest("Ungültiger Zeitraum".into());
