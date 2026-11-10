@@ -945,3 +945,60 @@ tbody tr.clickable:hover { background: color-mix(in srgb, var(--accent) 6%, tran
 .empty svg { color: color-mix(in srgb, var(--accent) 60%, var(--muted)); filter: drop-shadow(0 0 8px color-mix(in srgb, var(--accent) 40%, transparent)); }
 
 @media (prefers-reduced-motion: reduce) { .led.down, .sys-led.down i { animation: none; } }
+
+/* ---------------------------------------------------------------------------
+   Leitstand, Sektoren, Rechte
+   --------------------------------------------------------------------------- */
+.link-btn { background: none; border: 0; color: var(--accent); padding: 4px 0; font-size: 13px; cursor: pointer; text-decoration: underline; }
+.link-btn:hover { filter: none; background: none; }
+.filter-row { margin-bottom: 12px; }
+.muted-row td { opacity: 0.6; }
+tr.acked td { opacity: 0.75; }
+tr.acked td:first-child, tr.sev-critical td:first-child, tr.sev-warning td:first-child { box-shadow: inset 3px 0 0 var(--info); }
+tr.sev-critical td:first-child { box-shadow: inset 3px 0 0 var(--down); }
+tr.sev-warning td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
+.dc-tags { display: flex; flex-wrap: wrap; gap: 2px; margin-top: 6px; }
+.assign-row { align-items: flex-end; margin-bottom: 6px; }
+.assign-row > button { margin-bottom: 4px; }
+.perm-row { align-items: flex-start; margin: 6px 0; }
+.move-list { max-height: 50vh; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
+.token-show { display: block; padding: 10px; border-radius: var(--radius-sm); background: var(--surface-3); word-break: break-all; user-select: all; }
+.audit-filter { margin-bottom: 14px; padding: 14px; }
+.audit-filter > button { margin-bottom: 2px; }
+
+.ls-head { margin-bottom: 14px; }
+.ls-clock { font-variant-numeric: tabular-nums; font-weight: 600; color: var(--text-2); }
+.ls-kpis { margin-bottom: 16px; }
+.ls-kpis .kpi.k-up .kpi-icon { background: var(--up-soft); color: var(--up); }
+.ls-kpis .kpi.k-down { border-color: var(--down); }
+.ls-kpis .kpi.k-down .kpi-icon { background: var(--down-soft); color: var(--down); }
+.ls-kpis .kpi.k-down .kpi-value { color: var(--down); }
+.ls-kpis .kpi.k-warn .kpi-icon { background: var(--warn-soft); color: var(--warn); }
+.ls-kpis .kpi.k-info .kpi-icon { background: var(--info-soft); color: var(--info); }
+.ls-tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 14px; margin-bottom: 18px; }
+.ls-tile { display: grid; grid-template-columns: auto 1fr; grid-template-areas: "light name" "light state" "nums nums" "alerts alerts";
+  gap: 4px 12px; align-items: center; text-align: left; padding: 16px; border-radius: var(--radius); border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); font: inherit; cursor: pointer; box-shadow: var(--shadow); }
+.ls-tile:hover { border-color: var(--border-strong); filter: none; }
+.ls-tile:disabled { cursor: default; opacity: 1; }
+.ls-light { grid-area: light; width: 22px; height: 22px; border-radius: 50%; background: var(--up); box-shadow: 0 0 0 5px var(--up-soft); }
+.ls-name { grid-area: name; font-weight: 700; font-size: 16px; }
+.ls-state { grid-area: state; color: var(--muted); font-size: 12.5px; }
+.ls-nums { grid-area: nums; font-size: 13px; color: var(--text-2); margin-top: 6px; }
+.ls-nums .down { color: var(--down); }
+.ls-alerts { grid-area: alerts; display: flex; flex-wrap: wrap; gap: 4px; }
+.ls-tile.st-red { border-color: var(--down); background: color-mix(in srgb, var(--down-soft) 45%, var(--surface)); }
+.ls-tile.st-red .ls-light { background: var(--down); box-shadow: 0 0 0 5px var(--down-soft); animation: blink 1.2s infinite; }
+.ls-tile.st-yellow { border-color: var(--warn); }
+.ls-tile.st-yellow .ls-light { background: var(--warn); box-shadow: 0 0 0 5px var(--warn-soft); }
+.ls-tile.st-maintenance .ls-light { background: var(--info); box-shadow: 0 0 0 5px var(--info-soft); }
+.ls-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; background: var(--up); }
+.ls-dot.st-red { background: var(--down); } .ls-dot.st-yellow { background: var(--warn); } .ls-dot.st-maintenance { background: var(--info); }
+
+/* Leitstand-Bildschirm (Kiosk) und Vollbild: ohne Menü, größere Schrift */
+body.kiosk .sidebar, body.kiosk .menu-btn, body.kiosk .search, body.kiosk #logout { display: none !important; }
+body.kiosk .shell { grid-template-columns: 1fr; }
+body.kiosk .ls-name { font-size: 20px; }
+body.kiosk .ls-table { font-size: 15px; }
+:fullscreen .sidebar, :fullscreen .topbar { display: none; }
+:fullscreen .shell { grid-template-columns: 1fr; }

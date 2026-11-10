@@ -23,7 +23,7 @@ const icon = (name, cls = '') => `<svg class="i ${cls}"><use href="icons.svg?v=0
 
 const state = { user: null, refreshTimer: null, globalTimer: null, summary: null, liveStops: [] };
 
-async function api(path, { method = 'GET', body } = {}) {
+async function api(path, { method = 'GET', body, retried = false } = {}) {
   const res = await fetch('/api' + path, {
     method,
     headers: { 'Content-Type': 'application/json', 'X-NetPulse-Csrf': '1' },
@@ -40,12 +40,58 @@ async function api(path, { method = 'GET', body } = {}) {
     // 2FA wurde inzwischen zur Pflicht gemacht: App neu starten, dann greift die Sperre
     location.reload();
   }
+  if (res.status === 403 && data && data.reauth_required && !retried) {
+    // Kritische Aktion: Passwort (und ggf. Code) erneut abfragen, dann einmal wiederholen
+    if (await reauthDialog()) return api(path, { method, body, retried: true });
+    throw new Error('Abgebrochen – Bestätigung mit dem Passwort ist nötig');
+  }
   if (!res.ok) throw new Error((data && data.error) || `Fehler ${res.status}`);
   return data;
 }
 
+/** Erneute Bestätigung mit Passwort (und Code bei 2FA); liefert true bei Erfolg */
+function reauthDialog() {
+  return new Promise((resolve) => {
+    const dlg = document.createElement('dialog');
+    dlg.className = 'reauth';
+    dlg.innerHTML = `<div class="dlg-head"><h2>Bitte bestätigen</h2></div><div class="dlg-body">
+      <form class="form" method="dialog"><p class="muted">Für diese Aktion bitte dein Passwort erneut eingeben.</p>
+      <label>Passwort<input name="password" type="password" autocomplete="current-password" required></label>
+      <label>Code aus der Authenticator-App (falls eingerichtet)<input name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="7"></label>
+      <p class="error"></p>
+      <div class="actions"><button type="button" class="ghost" data-cancel>Abbrechen</button><button type="submit">Bestätigen</button></div></form></div>`;
+    document.body.appendChild(dlg);
+    let done = false;
+    const finish = (ok) => { if (done) return; done = true; dlg.close(); dlg.remove(); resolve(ok); };
+    dlg.querySelector('[data-cancel]').addEventListener('click', () => finish(false));
+    dlg.addEventListener('cancel', () => finish(false));
+    dlg.querySelector('form').addEventListener('submit', async (ev) => {
+      ev.preventDefault();
+      const f = new FormData(ev.target);
+      try {
+        await api('/me/reauth', { method: 'POST', body: { password: f.get('password'), code: f.get('code') || null }, retried: true });
+        finish(true);
+      } catch (e) {
+        dlg.querySelector('.error').textContent = e.message;
+      }
+    });
+    dlg.showModal();
+  });
+}
+
 const view = () => $('#view');
-const isAdmin = () => state.user && state.user.role === 'admin';
+/** Rechte des angemeldeten Benutzers: global oder je Sektor (inkl. Unter-Sektoren, vom Server aufgelöst) */
+const perms = () => (state.user && state.user.permissions) || { global: [], sites: {} };
+/** Recht für alle Sektoren – oder, mit `site`, in diesem Sektor */
+function can(perm, site) {
+  const p = perms();
+  if (p.global.includes(perm)) return true;
+  return site != null && (p.sites[site] || []).includes(perm);
+}
+/** Recht in mindestens einem Sektor (Zugang zu einer Seite; die Daten filtert der Server) */
+const canAny = (perm) => can(perm) || Object.values(perms().sites).some((l) => l.includes(perm));
+/** Verwaltungsrechte für alles */
+const isAdmin = () => !!state.user && ['users.manage', 'settings.manage', 'backup.manage', 'credentials.manage'].every((p) => can(p));
 
 function toast(message, isError = false) {
   const el = document.createElement('div');
@@ -492,7 +538,9 @@ function connectStream() {
         pushPoint(live.perDevice.get(d.id), d.power_w);
       });
     } else if (msg.type === 'alert') {
-      alertPopup(msg);
+      if (!state.user || !state.user.kiosk) alertPopup(msg);
+      refreshShell();
+    } else if (msg.type === 'ack') {
       refreshShell();
     } else if (msg.type === 'status' && msg.devices.length <= 3) {
       msg.devices.forEach((d) => toast(`${d.label} ist ${d.status === 'up' ? 'wieder erreichbar' : 'nicht erreichbar'}`, d.status !== 'up'));
@@ -929,7 +977,7 @@ function powerWidgetDialog(widget = {}) {
           <td><input type="radio" name="main" value=""${widget.main_id ? '' : ' checked'}></td></tr>
         ${devices.map((d) => `<tr><td><input type="checkbox" name="inc" value="${d.id}"${!included || included.has(d.id) ? ' checked' : ''}></td>
           <td>${esc(d.label)}</td><td class="small">${d.power_w != null ? esc(fmtWatt(d.power_w)) : '–'}</td>
-          <td><select name="role-${d.id}" data-role="${d.id}" data-was="${esc(d.role || 'consumer')}"${isAdmin() ? '' : ' disabled'}>
+          <td><select name="role-${d.id}" data-role="${d.id}" data-was="${esc(d.role || 'consumer')}"${canAny('devices.manage') ? '' : ' disabled'}>
             ${[['consumer', 'Verbrauch'], ['producer', 'Erzeugung'], ['grid', 'Netz-Zähler']].map(([v, l]) => `<option value="${v}"${(d.role || 'consumer') === v ? ' selected' : ''}>${l}</option>`).join('')}</select></td>
           <td><input type="radio" name="main" value="${d.id}"${widget.main_id === d.id ? ' checked' : ''}></td></tr>`).join('')}
       </tbody></table></div>
@@ -948,7 +996,7 @@ function powerWidgetDialog(widget = {}) {
       const checked = $$('input[name="inc"]', form).filter((c) => c.checked).map((c) => Number(c.value));
       const main = form.elements.main.value ? Number(form.elements.main.value) : null;
       // Geänderte Rollen am Gerät speichern
-      if (isAdmin()) {
+      if (canAny('devices.manage')) {
         for (const sel of $$('[data-role]', form)) {
           if (sel.value !== sel.dataset.was) {
             try { await api(`/devices/${sel.dataset.role}`, { method: 'PATCH', body: { energy_role: sel.value } }); } catch (e) { toast(e.message, true); }
@@ -1486,7 +1534,30 @@ function showLogin() {
         pattern="[0-9 ]{6,7}" maxlength="7" placeholder="123 456"></label>
       <button type="submit">Anmelden</button>
       <p class="error" id="login-error"></p>
+      <button type="button" class="link-btn" id="kiosk-toggle">Als Leitstand-Bildschirm anmelden</button>
+    </form>
+    <form class="card login" id="kiosk-form" hidden>
+      <div class="brand"><img src="favicon.svg" alt="" width="36" height="36"><span>Net<b>Pulse</b> Leitstand</span></div>
+      <p class="muted">Für Wandbildschirme: Anmeldung mit einem API-Schlüssel (unter „Mein Konto“ anlegen). Der Bildschirm kann nur ansehen.</p>
+      <label>API-Schlüssel<input name="token" autocomplete="off" required placeholder="np_…"></label>
+      <button type="submit">Leitstand öffnen</button>
+      <p class="error" id="kiosk-error"></p>
+      <button type="button" class="link-btn" id="kiosk-back">Zurück zur normalen Anmeldung</button>
     </form></div>`;
+  const toggleKiosk = (on) => { $('#login-form').hidden = on; $('#kiosk-form').hidden = !on; };
+  $('#kiosk-toggle').addEventListener('click', () => toggleKiosk(true));
+  $('#kiosk-back').addEventListener('click', () => toggleKiosk(false));
+  $('#kiosk-form').addEventListener('submit', async (ev) => {
+    ev.preventDefault();
+    try {
+      await api('/kiosk/login', { method: 'POST', body: { token: new FormData(ev.target).get('token').trim() } });
+      state.user = await api('/me');
+      location.hash = '#/leitstand';
+      startApp();
+    } catch (e) {
+      $('#kiosk-error').textContent = e.message;
+    }
+  });
   $('#login-form').addEventListener('submit', async (ev) => {
     ev.preventDefault();
     const f = new FormData(ev.target);
@@ -1509,6 +1580,8 @@ function showLogin() {
 
 const ROUTES = {
   dashboard: { title: 'Dashboard', view: () => viewDashboard() },
+  leitstand: { title: 'Leitstand', view: (a, p) => viewLeitstand(a, p), perm: 'view' },
+  sites: { title: 'Sektoren', view: () => viewSites(), perm: 'view' },
   devices: { title: 'Geräte', view: (a, p) => viewDevices(a, p) },
   device: { title: 'Gerät', view: (a, p) => viewDevice(a, p), nav: 'devices' },
   alerts: { title: 'Alarme', view: (a, p) => viewAlerts(a, p) },
@@ -1516,17 +1589,17 @@ const ROUTES = {
   checks: { title: 'Dienste', view: () => viewChecks() },
   map: { title: 'Netzwerkkarte', view: () => viewMap() },
   energy: { title: 'Energie', view: (a, p) => viewEnergy(a, p) },
-  syslog: { title: 'Protokolle', view: (a, p) => viewSyslog(a, p), admin: true },
-  statuspage: { title: 'Statusseite', view: () => viewStatusPage(), admin: true },
-  networks: { title: 'Netzwerke', view: () => viewNetworks(), admin: true },
-  credentials: { title: 'Zugangsdaten', view: () => viewCredentials(), admin: true },
-  channels: { title: 'Benachrichtigungen', view: () => viewChannels(), admin: true },
-  users: { title: 'Benutzer', view: () => viewUsers(), admin: true },
-  audit: { title: 'Audit-Log', view: () => viewAudit(), admin: true },
-  logs: { title: 'System-Log', view: () => viewLogs(), admin: true },
-  maintenance: { title: 'Wartung', view: () => viewMaintenance(), admin: true },
-  integrations: { title: 'Verbundene Programme', view: () => viewIntegrations(), admin: true },
-  backup: { title: 'Sicherung', view: () => viewBackup(), admin: true },
+  syslog: { title: 'Protokolle', view: (a, p) => viewSyslog(a, p), perm: 'devices.diagnose' },
+  statuspage: { title: 'Statusseite', view: () => viewStatusPage(), perm: 'settings.manage' },
+  networks: { title: 'Netzwerke', view: () => viewNetworks(), perm: 'networks.manage' },
+  credentials: { title: 'Zugangsdaten', view: () => viewCredentials(), perm: 'credentials.manage' },
+  channels: { title: 'Benachrichtigungen', view: () => viewChannels(), perm: 'alerts.manage' },
+  users: { title: 'Benutzer', view: (a, p) => viewUsers(a, p), perm: 'users.manage' },
+  audit: { title: 'Audit-Log', view: (a, p) => viewAudit(a, p), perm: 'audit.view' },
+  logs: { title: 'System-Log', view: () => viewLogs(), perm: 'audit.view' },
+  maintenance: { title: 'Wartung', view: () => viewMaintenance(), perm: 'view' },
+  integrations: { title: 'Verbundene Programme', view: () => viewIntegrations(), perm: 'settings.manage' },
+  backup: { title: 'Sicherung', view: () => viewBackup(), perm: 'backup.manage' },
   account: { title: 'Mein Konto', view: () => viewAccount() },
 };
 
@@ -1560,7 +1633,7 @@ async function route() {
   $('#page-title').textContent = r.title;
   document.title = `${r.title} · NetPulse`;
   $$('#nav a').forEach((a) => a.classList.toggle('active', a.getAttribute('href') === `#/${r.nav || key}`));
-  if (r.admin && !isAdmin()) {
+  if (r.perm && !canAny(r.perm)) {
     view().innerHTML = empty('Keine Berechtigung für diese Seite.', 'lock');
     return;
   }
@@ -1668,7 +1741,10 @@ function startApp() {
   $('#login-view').innerHTML = '';
   $('#app').hidden = false;
   document.body.classList.toggle('is-admin', isAdmin());
-  $('#user-name').textContent = state.user.username;
+  document.body.classList.toggle('kiosk', !!state.user.kiosk);
+  // Menüpunkte nur mit passendem Recht (in mindestens einem Sektor)
+  $$('#nav [data-perm]').forEach((el) => { el.hidden = !el.dataset.perm.split(' ').some((p) => canAny(p)); });
+  $('#user-name').textContent = state.user.display_name || state.user.username;
   // 2FA ist Pflicht, fehlt aber noch: nur „Mein Konto“ zeigen, bis sie eingerichtet ist
   document.body.classList.toggle('totp-lock', !!state.user.totp_setup_required);
   if (state.user.totp_setup_required) {
@@ -1682,7 +1758,8 @@ function startApp() {
   clearInterval(state.globalTimer);
   // Alarme kommen sofort über den Live-Stream; die Seitenleiste reicht alle 30 s
   state.globalTimer = setInterval(() => { if (!document.hidden) refreshShell(); }, 30000);
-  if (!location.hash || location.hash === '#/') location.hash = '#/dashboard';
+  if (state.user.kiosk && !location.hash.startsWith('#/leitstand')) location.hash = '#/leitstand';
+  else if (!location.hash || location.hash === '#/') location.hash = '#/dashboard';
   else route();
 }
 
