@@ -15,6 +15,15 @@ installiert** werden. Alles läuft in Docker, z. B. auf einem NAS oder Raspberry
 
 ## Funktionen
 
+- **Sektoren:** Standorte, Filialen, Gebäude oder abgeschottete Netze als Baum (Firma → Filiale → Etage).
+  Netze, Geräte, Dienste, Alarmregeln und Wartungsfenster gehören zu einem Sektor; Rechte gelten je Sektor.
+- **Leitstand:** Ampel je Sektor, Liste „Jetzt kaputt“ (offline, kritisch, quittiert), Vollbild- und **Kiosk-Modus**
+  für Wandbildschirme (Anmeldung mit API-Schlüssel, nur ansehen), Sektoren automatisch durchschalten.
+- **Benutzer, Gruppen, Rollen:** frei definierbare Rollen aus feinen Rechten (z. B. „Geräte bearbeiten“, „Alarme
+  quittieren“), Zuweisung an Benutzer oder Gruppen – für alle Sektoren oder nur einen. **Zentrale Anmeldung (SSO)**
+  über OpenID Connect (Entra ID, Keycloak, Authentik …) mit Gruppenabgleich, **API-Schlüssel** für Skripte.
+- **Probes:** ein kleiner NetPulse-Ableger (`netpulse probe`) prüft entfernte Sektoren vor Ort und meldet nur über
+  ausgehendes HTTPS – kein VPN, keine Portfreigabe in der Filiale.
 - **Geräteerkennung:** Ping, TCP, ARP, Reverse-DNS, 28 typische Ports, **Hersteller aus der MAC-Adresse**
   (IEEE-Liste mit über 40.000 Einträgen) und **automatische Erkennung des Gerätetyps** (Router, Switch, NAS, Drucker,
   Windows-PC, Smartphone, Kamera, Smart Home …) mit passenden Icons.
@@ -45,13 +54,15 @@ installiert** werden. Alles läuft in Docker, z. B. auf einem NAS oder Raspberry
   alle Access Points/Switches mit Status, CPU/RAM, Clients, Uplink; Namen und Werte landen automatisch bei den Geräten.
 - **Gerätenamen** aus mDNS/Bonjour, NetBIOS, SNMP, SSH, DNS und dem UniFi-Controller.
 - **SNMP-Explorer** mit Namen aus ~4.800 MIBs (knapp 960.000 benannte Werte).
+- **Alarmierung:** Schweregrad, **Quittieren** mit Kommentar, Regeln je Sektor oder Schlagwort, Benachrichtigung
+  von Gruppen (App-Push und E-Mail), **Eskalation** nach X Minuten ohne Quittung, Flatterschutz (`MONITOR_FAIL_THRESHOLD`).
 - **Alarme** mit Entwarnung: Gerät offline, neues Gerät im Netz, MAC-/SSH-Schlüssel geändert, Speicher voll,
   CPU/RAM/Temperatur hoch. Versand über **ntfy (Handy-Push), E-Mail, Telegram, Gotify, Discord, Microsoft Teams, Webhook**.
 - **Weboberfläche:** modernes Design (hell/dunkel), Geräte als Karten oder Tabelle, Detailseiten mit Diagrammen,
   frei anpassbares Dashboard, Live-Fortschritt beim Scannen, Handy-tauglich.
 - **NetPulse-App:** als App aufs Handy installierbar (PWA), **Push-Nachrichten** bei Alarmen, Zugriff von außen über
   den eigenen Reverse-Proxy (z. B. Nginx Proxy Manager) – siehe unten.
-- **Sicherheit:** Rollen (Admin / Nur lesen), **Zwei-Faktor-Anmeldung (TOTP)**, Audit-Log, Zugangsdaten AES-256-verschlüsselt, siehe unten.
+- **Sicherheit:** Rollen und Rechte je Sektor, **Zwei-Faktor-Anmeldung (TOTP)**, erneute Passwortabfrage vor kritischen Aktionen, Audit-Log, Zugangsdaten AES-256-verschlüsselt, siehe unten.
 
 Handbuch: [docs/HANDBUCH.md](docs/HANDBUCH.md) · Aufbau und Roadmap: [docs/ARCHITEKTUR.md](docs/ARCHITEKTUR.md) · Datenschutz und Recht: [docs/DATENSCHUTZ.md](docs/DATENSCHUTZ.md)
 
@@ -225,6 +236,11 @@ sehen nur den verschlüsselten Inhalt. Alternativ ohne Zugriff von außen: VPN (
 | `REQUIRE_TOTP` | false | `true` = alle Benutzer müssen Zwei-Faktor-Anmeldung nutzen (fest); sonst unter **Benutzer** schaltbar |
 | `SECRET_KEY` | – (wird erzeugt) | Tresor-Schlüssel (64 Hex-Zeichen), falls nicht aus `/data/secret.key` |
 | `DB_PORT` / `APP_PORT` | 5433 / 18080 | Interne Ports auf dem Host (nur 127.0.0.1) |
+| `DB_MAX_CONNECTIONS` | 20 | Größe des Datenbank-Verbindungspools (5–500); bei vielen Sektoren/Probes erhöhen |
+| `MONITOR_FAIL_THRESHOLD` | 2 | So viele Fehlschläge in Folge, bevor ein Gerät als offline gilt (1–20, Flatterschutz) |
+
+**Probe** (`deploy/probe-stack.yml`, Befehl `netpulse probe`): `NETPULSE_SERVER` (Adresse des Servers, `https://…`) und
+`PROBE_TOKEN` (Schlüssel `npp_…`, unter **Netzwerke → Probes** angelegt). Nur zum Testen im LAN: `PROBE_ALLOW_HTTP=true`.
 
 ## Sicherheit auf einen Blick
 
@@ -234,7 +250,12 @@ sehen nur den verschlüsselten Inhalt. Alternativ ohne Zugriff von außen: VPN (
 - Zugangsdaten (SNMP, SSH) und Kanal-Geheimnisse werden AES-256-GCM-verschlüsselt gespeichert; der Schlüssel liegt außerhalb der Datenbank.
 - SSH-Host-Schlüssel werden beim ersten Kontakt gemerkt, Änderungen stoppen die Abfrage (Schutz vor Man-in-the-Middle).
 - SSH-Passwörter werden nie „auf Verdacht“ an fremde Geräte gesendet.
-- Cookies sind `HttpOnly`, `Secure` und `SameSite=Strict`; dazu kommt ein CSRF-Header und nach 5 Fehlversuchen eine Login-Sperre.
+- Cookies sind `HttpOnly`, `Secure` und `SameSite=Strict`; dazu kommt ein CSRF-Header und nach 5 Fehlversuchen eine Login-Sperre
+  (in der Datenbank – gilt auch nach einem Neustart).
+- Kritische Aktionen (Benutzer, Rollen, Sicherung, Zugangsdaten, Tresor) verlangen eine frische Anmeldung (Passwort erneut, 10 Minuten gültig);
+  mit API-Schlüsseln sind sie gar nicht möglich.
+- Rechte gelten je Sektor – auch im Live-Stream: Meldungen zu fremden Sektoren werden nicht ausgeliefert.
+- Der Tresor-Schlüssel lässt sich unter **Sicherung → Tresor-Schlüssel** tauschen; alle Geheimnisse werden dabei neu verschlüsselt.
 - Strenge Content-Security-Policy, HSTS und keine externen Skripte oder CDNs.
 - Gescannt werden nur Netze, die ein Admin ausdrücklich freigegeben hat (höchstens /16 je Eintrag).
 - Das Audit-Log protokolliert alle Anmeldungen und Änderungen.
