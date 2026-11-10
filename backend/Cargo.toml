@@ -14,7 +14,7 @@ base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 # Zeitzone für den Scan-Zeitplan („täglich um 03:00“)
 chrono-tz = "0.10"
-dns-lookup = "2"
+dns-lookup = "4"
 # Entpacken der eingebetteten MIB-Namensliste
 flate2 = "1"
 futures = "0.3"
