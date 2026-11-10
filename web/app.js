@@ -19,7 +19,7 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ESCAPES[c]);
-const icon = (name, cls = '') => `<svg class="i ${cls}"><use href="icons.svg?v=0.9.16#i-${name}"/></svg>`;
+const icon = (name, cls = '') => `<svg class="i ${cls}"><use href="icons.svg?v=0.9.17#i-${name}"/></svg>`;
 
 const state = { user: null, refreshTimer: null, globalTimer: null, summary: null, liveStops: [] };
 
@@ -115,6 +115,32 @@ async function attempt(fn, successMessage) {
 }
 
 /** Breiten von Balken setzen (per JavaScript, weil die CSP Inline-Styles verbietet) */
+/**
+ * Handy: Tabellen werden unter 720 px als Karten gezeigt. Dafür bekommt jede Zelle die Spaltenüberschrift
+ * als data-label (per CSS davor angezeigt). Läuft automatisch für alle Tabellen mit Kopfzeile.
+ */
+function labelTable(table) {
+  const head = table.tHead && table.tHead.rows[0];
+  if (!head || table.classList.contains('no-stack')) return;
+  const labels = [];
+  [...head.cells].forEach((th) => { for (let i = 0; i < (th.colSpan || 1); i += 1) labels.push(th.textContent.trim()); });
+  table.classList.add('as-cards');
+  [...table.tBodies].forEach((body) => [...body.rows].forEach((row) => {
+    let col = 0;
+    [...row.cells].forEach((td) => {
+      if (!td.hasAttribute('data-label')) td.setAttribute('data-label', labels[col] || '');
+      col += td.colSpan || 1;
+    });
+  }));
+}
+function stackTables() {
+  let pending = false;
+  const run = () => { pending = false; document.querySelectorAll('#view table, #modal table').forEach(labelTable); };
+  run();
+  new MutationObserver(() => { if (!pending) { pending = true; requestAnimationFrame(run); } })
+    .observe(document.body, { childList: true, subtree: true });
+}
+
 function applyWidths(root = document) {
   $$('[data-w]', root).forEach((el) => { el.style.width = `${Math.max(0, Math.min(100, Number(el.dataset.w)))}%`; });
 }
@@ -1650,7 +1676,7 @@ async function route() {
   const r = ROUTES[key];
   $('#page-title').textContent = r.title;
   document.title = `${r.title} · NetPulse`;
-  $$('#nav a').forEach((a) => a.classList.toggle('active', a.getAttribute('href') === `#/${r.nav || key}`));
+  $$('#nav a, #tabbar a').forEach((a) => a.classList.toggle('active', a.getAttribute('href') === `#/${r.nav || key}`));
   if (r.perm && !canAny(r.perm)) {
     view().innerHTML = empty('Keine Berechtigung für diese Seite.', 'lock');
     return;
@@ -1688,6 +1714,9 @@ async function refreshShell() {
     const badge = $('#alert-badge');
     badge.hidden = !summary.open_alerts;
     badge.textContent = summary.open_alerts;
+    const tabBadge = $('#tab-alert-badge');
+    tabBadge.hidden = !summary.open_alerts;
+    tabBadge.textContent = summary.open_alerts > 99 ? '99+' : summary.open_alerts;
     const scan = summary.scan;
     const mini = $('#scan-mini');
     mini.hidden = !(scan && scan.running);
@@ -1795,6 +1824,14 @@ function init() {
     applyTheme(next);
   });
   $('#menu-toggle').addEventListener('click', () => $('#sidebar').classList.toggle('open'));
+  $('#tab-more').addEventListener('click', () => $('#sidebar').classList.toggle('open'));
+  $('#sidebar-scrim').addEventListener('click', () => $('#sidebar').classList.remove('open'));
+  stackTables();
+  // Handy: gekürzte Hinweise per Antippen aufklappen (Links darin funktionieren weiter)
+  view().addEventListener('click', (ev) => {
+    const n = ev.target.closest('.notice');
+    if (n && !ev.target.closest('a, button, input, select') && matchMedia('(max-width: 720px)').matches) n.classList.toggle('open');
+  });
   $('#global-search').addEventListener('keydown', (ev) => {
     if (ev.key === 'Enter') location.hash = `#/devices?q=${encodeURIComponent(ev.target.value.trim())}`;
   });

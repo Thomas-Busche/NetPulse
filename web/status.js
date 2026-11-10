@@ -5,7 +5,7 @@
 const ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ESC[c]);
 const $ = (s) => document.querySelector(s);
-const icon = (name, cls = '') => `<svg class="i ${cls}"><use href="icons.svg?v=0.9.16#i-${name}"/></svg>`;
+const icon = (name, cls = '') => `<svg class="i ${cls}"><use href="icons.svg?v=0.9.17#i-${name}"/></svg>`;
 
 const LABEL = { ok: 'Funktioniert', degraded: 'Eingeschränkt', down: 'Störung', unknown: 'Unbekannt' };
 const OVERALL = {
