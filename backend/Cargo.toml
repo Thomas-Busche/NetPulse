@@ -41,7 +41,7 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 russh = { version = "0.63", default-features = false, features = ["ring", "rsa", "flate2"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-sha1 = "0.10"
+sha1 = "0.11"
 sha2 = "0.10"
 # SNMP v2c/v3 mit reiner Rust-Kryptografie
 snmp2 = "0.5"
