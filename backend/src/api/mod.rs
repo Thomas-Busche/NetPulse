@@ -9,6 +9,7 @@ mod dashboard;
 mod devices;
 mod energy;
 mod integrations;
+mod oidc;
 mod probes;
 mod public;
 mod session;
@@ -31,6 +32,8 @@ pub fn router(state: AppState) -> Router {
     let api = Router::new()
         // Anmeldung
         .route("/login", post(session::login))
+        .route("/oidc/info", get(oidc::info))
+        .route("/settings/oidc", get(oidc::get_settings).put(oidc::put_settings))
         .route("/logout", post(session::logout))
         .route("/me", get(session::me))
         .route("/me/password", post(session::change_password))
@@ -154,6 +157,9 @@ pub fn router(state: AppState) -> Router {
         .layer(middleware::from_fn(auth::csrf_guard))
         // Leitstand-Bildschirm: meldet sich mit einem API-Schlüssel an und bekommt eine Kiosk-Sitzung
         .route("/kiosk/login", post(users::kiosk_login))
+        // Zentrale Anmeldung: Weiterleitungen des Browsers (GET, ohne CSRF-Header)
+        .route("/oidc/start", get(oidc::start))
+        .route("/oidc/callback", get(oidc::callback))
         // Schnittstelle für verbundene Programme: Anmeldung per Schlüssel im Authorization-Header
         // (kein Cookie – deshalb ohne CSRF-Header; fremde Webseiten kennen den Schlüssel nicht)
         .route("/integration/v1/hello", get(integrations::hello))

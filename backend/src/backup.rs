@@ -36,7 +36,7 @@ pub const FORMAT: &str = "netpulse-backup";
 /// 2: Sektoren, Rollen, Gruppen, Rechte je Sektor, geteilte Dashboards
 const VERSION: u32 = 2;
 /// Einstellungen, die mitgesichert werden (keine Laufzeit-Zustände wie „letzter Scan“)
-const SETTINGS: &[&str] = &["discovery_schedule", "smtp", "status_page", "security", "energy", "live_settings"];
+const SETTINGS: &[&str] = &["discovery_schedule", "smtp", "status_page", "security", "energy", "live_settings", "oidc"];
 const KDF_M: u32 = 64 * 1024;
 const KDF_T: u32 = 3;
 
@@ -164,6 +164,13 @@ pub async fn export(state: &AppState) -> Result<Value> {
     for s in &mut settings {
         if s["key"] == "smtp" {
             s["value"] = json!({ "plain": open(&s["value"]["sealed"]) });
+        }
+        if s["key"] == "oidc" {
+            let plain = open(&s["value"]["client_secret_sealed"]);
+            if let Some(map) = s["value"].as_object_mut() {
+                map.remove("client_secret_sealed");
+                map.insert("client_secret_plain".into(), plain);
+            }
         }
     }
 
@@ -767,6 +774,15 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
             "smtp" => {
                 let plain: Map<String, Value> = value["plain"].as_object().cloned().unwrap_or_default();
                 value = json!({ "sealed": vault.seal(&plain)? });
+            }
+            "oidc" => {
+                if let Some(map) = value.as_object_mut() {
+                    let sealed = match map.remove("client_secret_plain") {
+                        Some(Value::String(secret)) => json!(vault.seal(&secret)?),
+                        _ => Value::Null,
+                    };
+                    map.insert("client_secret_sealed".into(), sealed);
+                }
             }
             "status_page" => {
                 if let Some(items) = value["items"].as_array_mut() {

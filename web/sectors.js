@@ -399,7 +399,8 @@ async function viewUsers(_arg, params) {
     const editor = assignmentsEditor(roles, u ? u.assignments : [{ role_id: (roles.find((r) => r.name === 'Nur lesen') || roles[0] || {}).id, site_id: null }]);
     const dlg = openModal(u ? `Benutzer „${u.username}“` : 'Benutzer anlegen', `<form class="form" id="user-form">
       ${u ? '' : `<div class="form-row"><label>Benutzername<input name="username" required minlength="3" maxlength="64" autocomplete="off"></label>
-        <label>Passwort (mind. 12 Zeichen)<input name="password" type="password" required minlength="12" autocomplete="new-password"></label></div>`}
+        <label id="pw-field">Passwort (mind. 12 Zeichen)<input name="password" type="password" required minlength="12" autocomplete="new-password"></label></div>
+        <label class="inline"><input type="checkbox" name="sso"> Anmeldung über den zentralen Anmeldedienst (kein eigenes Passwort)</label>`}
       <div class="form-row"><label>Anzeigename<input name="display_name" maxlength="100" value="${esc(u ? u.display_name || '' : '')}"></label>
         <label>E-Mail (für Gruppen-Benachrichtigungen)<input name="email" type="email" maxlength="200" value="${esc(u ? u.email || '' : '')}"></label></div>
       ${editor.html}
@@ -408,6 +409,11 @@ async function viewUsers(_arg, params) {
       ${u && u.id !== state.user.id ? `<label class="inline"><input type="checkbox" name="disabled"${u.disabled ? ' checked' : ''}> Deaktiviert (kann sich nicht anmelden)</label>` : ''}
       <div class="actions"><button type="submit">${icon('check')}Speichern</button></div></form>`);
     editor.bind(dlg);
+    const ssoBox = $('input[name="sso"]', dlg);
+    ssoBox?.addEventListener('change', () => {
+      $('#pw-field', dlg).hidden = ssoBox.checked;
+      dlg.querySelector('input[name="password"]').required = !ssoBox.checked;
+    });
     $('#user-form', dlg).addEventListener('submit', (ev) => {
       ev.preventDefault();
       const f = ev.target.elements;
@@ -420,7 +426,7 @@ async function viewUsers(_arg, params) {
       if (f.disabled) body.disabled = f.disabled.checked;
       attempt(async () => {
         if (u) await api(`/users/${u.id}`, { method: 'PATCH', body });
-        else await api('/users', { method: 'POST', body: { ...body, username: f.username.value.trim(), password: f.password.value } });
+        else await api('/users', { method: 'POST', body: { ...body, username: f.username.value.trim(), password: f.sso.checked ? '' : f.password.value, sso: f.sso.checked } });
         dlg.close();
         await render();
       }, 'Benutzer gespeichert');
@@ -537,7 +543,8 @@ async function viewUsers(_arg, params) {
     return `<header><h2>${icon('users')}Zentrale Anmeldung (SSO)</h2>${o.enabled ? '<span class="badge st-up">aktiv</span>' : '<span class="badge plain">aus</span>'}</header>
       <form class="form" id="oidc-form">
         <p class="muted small">Anmeldung über Microsoft Entra ID, Keycloak, Authentik, Google Workspace o. ä. (OpenID Connect).
-          Beim Anmeldedienst als Rücksprung-Adresse eintragen: <code>${esc(o.redirect_uri || '')}</code></p>
+          ${o.redirect_uri ? `Beim Anmeldedienst als Rücksprung-Adresse eintragen: <code>${esc(o.redirect_uri)}</code>`
+            : '<b>Zuerst <code>PUBLIC_URL</code> (bzw. <code>SITE_ADDRESS</code>) setzen</b> – daraus ergibt sich die Rücksprung-Adresse.'}</p>
         <label class="inline"><input type="checkbox" name="enabled"${o.enabled ? ' checked' : ''}> Zentrale Anmeldung einschalten</label>
         <div class="form-row"><label>Anzeigename auf der Anmeldeseite<input name="label" maxlength="60" value="${esc(o.label || 'Firmenkonto')}"></label>
           <label>Aussteller (Issuer-URL)<input name="issuer" type="url" value="${esc(o.issuer || '')}" placeholder="https://login.microsoftonline.com/…/v2.0"></label></div>
@@ -546,7 +553,8 @@ async function viewUsers(_arg, params) {
         <div class="form-row"><label>Gruppen-Claim<input name="groups_claim" value="${esc(o.groups_claim || 'groups')}"></label>
           <label>Neue Benutzer automatisch anlegen<select name="auto_create"><option value="true"${o.auto_create !== false ? ' selected' : ''}>Ja – Rechte kommen über die Gruppen</option>
             <option value="false"${o.auto_create === false ? ' selected' : ''}>Nein – nur vorhandene Benutzer</option></select></label></div>
-        <p class="hint">Gruppen werden bei jeder Anmeldung abgeglichen: Hat eine NetPulse-Gruppe unter „Name der Gruppe beim zentralen Anmeldedienst“ den gleichen Namen, wird der Benutzer Mitglied.</p>
+        <p class="hint">Gruppen werden bei jeder Anmeldung abgeglichen: Hat eine NetPulse-Gruppe unter „Name der Gruppe beim zentralen Anmeldedienst“ den gleichen Namen, wird der Benutzer Mitglied (und sonst entfernt).
+          Verschachtelte Claims mit Punkt, z. B. <code>realm_access.roles</code> bei Keycloak. Vorhandene Konten werden nur verknüpft, wenn sie unter Benutzer als „zentral“ angelegt wurden.</p>
         <div class="actions"><button type="submit">${icon('check')}Speichern</button></div></form>`;
   }
 

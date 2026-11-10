@@ -1516,6 +1516,13 @@ async function viewDashboard() {
 // Anmeldung, Navigation, Rahmen
 // ---------------------------------------------------------------------------
 
+// Fehler der zentralen Anmeldung (Rücksprung als #sso-error=…) beim Laden merken, bevor das Routing den Hash ersetzt
+let ssoError = '';
+if (location.hash.startsWith('#sso-error=')) {
+  try { ssoError = decodeURIComponent(location.hash.slice(11)); } catch { ssoError = location.hash.slice(11); }
+  history.replaceState(null, '', location.pathname);
+}
+
 function showLogin() {
   state.user = null;
   disconnectStream();
@@ -1534,6 +1541,7 @@ function showLogin() {
         pattern="[0-9 ]{6,7}" maxlength="7" placeholder="123 456"></label>
       <button type="submit">Anmelden</button>
       <p class="error" id="login-error"></p>
+      <button type="button" class="ghost" id="sso-btn" hidden></button>
       <button type="button" class="link-btn" id="kiosk-toggle">Als Leitstand-Bildschirm anmelden</button>
     </form>
     <form class="card login" id="kiosk-form" hidden>
@@ -1545,6 +1553,15 @@ function showLogin() {
       <button type="button" class="link-btn" id="kiosk-back">Zurück zur normalen Anmeldung</button>
     </form></div>`;
   const toggleKiosk = (on) => { $('#login-form').hidden = on; $('#kiosk-form').hidden = !on; };
+  // Zentrale Anmeldung: Knopf nur, wenn eingerichtet; Fehler kommen per Rücksprung als #sso-error=…
+  if (ssoError) $('#login-error').textContent = ssoError;
+  fetch('/api/oidc/info').then((r) => (r.ok ? r.json() : null)).then((info) => {
+    const btn = $('#sso-btn');
+    if (!btn || !info || !info.enabled) return;
+    btn.textContent = `Anmelden mit ${info.label}`;
+    btn.hidden = false;
+    btn.addEventListener('click', () => { location.href = '/api/oidc/start'; });
+  }).catch(() => {});
   $('#kiosk-toggle').addEventListener('click', () => toggleKiosk(true));
   $('#kiosk-back').addEventListener('click', () => toggleKiosk(false));
   $('#kiosk-form').addEventListener('submit', async (ev) => {
@@ -1559,6 +1576,7 @@ function showLogin() {
     }
   });
   $('#login-form').addEventListener('submit', async (ev) => {
+    ssoError = '';
     ev.preventDefault();
     const f = new FormData(ev.target);
     try {

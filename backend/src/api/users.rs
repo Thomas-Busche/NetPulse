@@ -157,7 +157,11 @@ pub async fn list_users(State(st): State<AppState>, _admin: Need<perm::UsersMana
 #[derive(Deserialize)]
 pub struct NewUser {
     username: String,
+    #[serde(default)]
     password: String,
+    /// Konto für die zentrale Anmeldung (OIDC) – ohne eigenes Passwort
+    #[serde(default)]
+    sso: bool,
     #[serde(default)]
     display_name: Option<String>,
     #[serde(default)]
@@ -207,22 +211,26 @@ pub async fn add_user(State(st): State<AppState>, Need(admin, _): Need<perm::Use
             "Benutzername: 3–64 Zeichen, erlaubt sind a–z, 0–9, Punkt, Minus, Unterstrich und @".into(),
         ));
     }
-    auth::validate_password(&req.password).map_err(ApiError::BadRequest)?;
+    if !req.sso {
+        auth::validate_password(&req.password).map_err(ApiError::BadRequest)?;
+    }
     let email = clean(req.email.as_deref(), 200);
     validate_email(&email)?;
     let mut assignments = req.assignments.clone();
     assignments.extend(legacy_role(&st.db, req.role.as_deref()).await?);
 
-    let hash = auth::hash_password(req.password).await?;
+    // SSO-Konten bekommen keinen gültigen Passwort-Hash; die Anmeldung läuft nur über den Anmeldedienst
+    let hash = if req.sso { "!sso".to_string() } else { auth::hash_password(req.password).await? };
     let mut tx = st.db.begin().await?;
     let (id,): (i64,) = sqlx::query_as(
-        "INSERT INTO users (username, password_hash, display_name, email) VALUES ($1, $2, $3, $4)
+        "INSERT INTO users (username, password_hash, display_name, email, auth_source) VALUES ($1, $2, $3, $4, $5)
          ON CONFLICT (username) DO NOTHING RETURNING id",
     )
     .bind(&username)
     .bind(hash)
     .bind(clean(req.display_name.as_deref(), 100))
     .bind(&email)
+    .bind(if req.sso { "oidc" } else { "local" })
     .fetch_optional(&mut *tx)
     .await?
     .ok_or_else(|| ApiError::BadRequest(format!("Benutzer '{username}' existiert bereits")))?;
