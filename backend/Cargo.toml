@@ -6,7 +6,7 @@ description = "Agentenloses Netzwerk-Monitoring mit Weboberfläche"
 publish = false
 
 [dependencies]
-aes-gcm = "0.10"
+aes-gcm = "0.11"
 anyhow = "1"
 argon2 = { version = "0.5", features = ["std"] }
 axum = "0.8"
