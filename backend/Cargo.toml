@@ -23,7 +23,7 @@ hex = "0.4"
 libc = "0.2"
 md-5 = "0.10"
 # Web Push (RFC 8291): Schlüsselableitung und Signatur für die NetPulse-App
-hkdf = "0.12"
+hkdf = "0.13"
 # Zwei-Faktor-Anmeldung (TOTP, RFC 6238)
 hmac = "0.12"
 p256 = { version = "0.13", features = ["ecdh", "ecdsa"] }

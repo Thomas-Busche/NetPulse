@@ -1973,7 +1973,7 @@ dependencies = [
  "flate2",
  "futures",
  "hex",
- "hkdf 0.12.4",
+ "hkdf 0.13.0",
  "hmac 0.12.1",
  "lettre",
  "libc",
