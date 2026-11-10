@@ -48,7 +48,7 @@ snmp2 = "0.5"
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "postgres", "chrono", "json", "macros", "migrate"] }
 surge-ping = "0.8"
 tokio = { version = "1", features = ["full"] }
-tower-http = { version = "0.6", features = ["fs", "trace", "set-header"] }
+tower-http = { version = "0.7", features = ["fs", "trace", "set-header"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
