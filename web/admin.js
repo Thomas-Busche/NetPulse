@@ -1297,7 +1297,8 @@ async function downloadFile(path, body) {
 }
 
 const REPORT_LABEL = { networks: 'Netze', devices: 'Geräte', credentials: 'Zugangsdaten', channels: 'Benachrichtigungskanäle', checks: 'Dienste',
-  alert_rules: 'Alarm-Regeln', maintenance: 'Wartungsfenster', users: 'Benutzer', settings: 'Einstellungen', energy_days: 'Energie-Tageswerte' };
+  alert_rules: 'Alarm-Regeln', maintenance: 'Wartungsfenster', users: 'Benutzer', settings: 'Einstellungen', energy_days: 'Energie-Tageswerte',
+  sites: 'Sektoren', roles: 'Rollen', groups: 'Gruppen' };
 
 async function viewBackup() {
   view().innerHTML = `
@@ -1325,7 +1326,22 @@ async function viewBackup() {
       <section class="card span-1"><header><h2>${icon('calendar-time')}Automatische Sicherung</h2></header><div id="bk-auto"><div class="empty">Lade …</div></div></section>
       <section class="card span-3"><header><h2>${icon('database')}Gespeicherte Sicherungen</h2>
         <button type="button" class="ghost sm" id="bk-now">${icon('player-play', 'i-sm')}Jetzt sichern</button></header><div id="bk-files"></div></section>
+      <section class="card span-3"><header><h2>${icon('key')}Tresor-Schlüssel</h2></header><div id="bk-vault"><div class="empty">Lade …</div></div></section>
     </div>`;
+  api('/vault').then((v) => {
+    $('#bk-vault').innerHTML = v.can_rotate ? `<p class="muted">Alle gespeicherten Geheimnisse (Zugangsdaten, Kanäle, 2FA, E-Mail-Server, Sicherungs-Passwort, zentrale Anmeldung)
+        werden mit einem neuen Schlüssel neu verschlüsselt. Sinnvoll, wenn jemand mit Zugriff auf den Server ausgeschieden ist oder die Datei <code>secret.key</code> in falsche Hände geraten sein könnte.
+        Der alte Schlüssel bleibt als <code>secret.key.old-…</code> im Datenverzeichnis liegen; ältere Datenbank-Sicherungen brauchen ihn weiterhin.</p>
+      <div class="actions"><button type="button" class="danger" id="vault-rotate">${icon('refresh')}Schlüssel jetzt tauschen</button></div>`
+      : `<p class="muted">Der Schlüssel ist über <code>SECRET_KEY</code> fest vorgegeben und kann deshalb nur dort getauscht werden.</p>`;
+    $('#vault-rotate')?.addEventListener('click', () => {
+      if (!confirm('Tresor-Schlüssel jetzt tauschen? Danach unbedingt die neue Datei secret.key mitsichern.')) return;
+      attempt(async () => {
+        const r = await api('/vault/rotate', { method: 'POST' });
+        toast(`${r.entries} Einträge neu verschlüsselt – alter Schlüssel: ${r.old_key}`);
+      });
+    });
+  }).catch((e) => { $('#bk-vault').innerHTML = `<p class="muted">${esc(e.message)}</p>`; });
 
   $('#bk-export').addEventListener('submit', (ev) => {
     ev.preventDefault();

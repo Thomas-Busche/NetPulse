@@ -184,3 +184,18 @@ pub async fn delete_file(State(st): State<AppState>, Need(user, _): Need<perm::B
     audit::by(&st.db, &user, "backup_delete", json!({ "file": name })).await;
     Ok(Json(json!({ "ok": true })))
 }
+
+/// Tresor-Schlüssel tauschen (z. B. nach Ausscheiden eines Admins oder nach einem Vorfall)
+pub async fn rotate_key(State(st): State<AppState>, Need(user, _): Need<perm::BackupManage>) -> ApiResult<Json<Value>> {
+    user.require_recent_auth(&st.db).await?;
+    if !st.vault.can_rotate() {
+        return Err(ApiError::BadRequest("Der Schlüssel ist über SECRET_KEY fest vorgegeben – Tausch nur dort möglich".into()));
+    }
+    let (count, backup) = st.vault.rotate(&st.db).await.map_err(|e| ApiError::BadRequest(format!("{e:#}")))?;
+    audit::by(&st.db, &user, "vault_rotate", json!({ "entries": count })).await;
+    Ok(Json(json!({ "ok": true, "entries": count, "old_key": backup.file_name().map(|n| n.to_string_lossy().to_string()) })))
+}
+
+pub async fn vault_info(State(st): State<AppState>, _user: Need<perm::BackupManage>) -> Json<Value> {
+    Json(json!({ "can_rotate": st.vault.can_rotate() }))
+}

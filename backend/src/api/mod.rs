@@ -136,6 +136,8 @@ pub fn router(state: AppState) -> Router {
         .route("/backup/auto", get(backup::get_auto).put(backup::set_auto))
         .route("/backup/auto/run", post(backup::run_auto))
         .route("/backup/files/{name}", get(backup::get_file).delete(backup::delete_file))
+        .route("/vault", get(backup::vault_info))
+        .route("/vault/rotate", post(backup::rotate_key))
         .route("/maintenance", get(admin::list_maintenance).post(admin::create_maintenance))
         .route("/maintenance/{id}", axum::routing::patch(admin::update_maintenance).delete(admin::delete_maintenance))
         // Verbundene Programme (Verwaltung)
