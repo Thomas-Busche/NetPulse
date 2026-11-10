@@ -31,34 +31,44 @@ const RULE_GROUPS = [
 
 async function viewAlerts(_arg, params) {
   let tab = params.get('tab') || 'open';
+  let site = params.get('site') ? Number(params.get('site')) : null;
+  await loadSites();
   const render = async () => {
     const tabs = [['open', 'Aktiv'], ['history', 'Verlauf']];
-    if (isAdmin()) tabs.push(['rules', 'Regeln']);
+    if (can('alerts.manage')) tabs.push(['rules', 'Regeln']);
     let body = '';
     if (tab === 'rules') body = await renderRules();
     else {
-      const alerts = await api(`/alerts?${tab === 'open' ? 'open=true&' : ''}limit=300`);
-      body = alerts.length ? `<div class="table-wrap"><table>
-        <thead><tr><th>Status</th><th>Meldung</th><th>Regel</th><th>Ausgelöst</th><th>Behoben</th></tr></thead>
-        <tbody>${alerts.map((a) => `<tr>
-          <td>${a.resolved_at ? '<span class="badge sev-resolved">behoben</span>' : '<span class="badge sev-critical">aktiv</span>'}</td>
-          <td>${a.device_id ? `<a href="#/device/${a.device_id}">${esc(a.message)}</a>` : esc(a.message)}</td>
+      const alerts = await api(`/alerts?${tab === 'open' ? 'open=true&' : ''}limit=300${site ? `&site=${site}` : ''}`);
+      const sev = (a) => (a.resolved_at ? '<span class="badge sev-resolved">behoben</span>'
+        : `<span class="badge ${a.severity === 'critical' ? 'sev-critical' : a.severity === 'info' ? 'info' : 'warn'}">${esc(SEV_LABEL[a.severity] || 'aktiv')}</span>`);
+      body = `${sitesCache.list.length > 1 ? `<div class="actions filter-row"><select id="alert-site" aria-label="Sektor">${siteOptions(site, { all: 'Alle Sektoren' })}</select></div>` : ''}
+        ${alerts.length ? `<div class="table-wrap"><table>
+        <thead><tr><th>Status</th><th>Meldung</th><th>Sektor</th><th>Regel</th><th>Ausgelöst</th><th>${tab === 'open' ? 'Bearbeitung' : 'Behoben'}</th></tr></thead>
+        <tbody>${alerts.map((a) => `<tr class="${a.acknowledged_at && !a.resolved_at ? 'acked' : ''}">
+          <td>${sev(a)}</td>
+          <td>${a.device_id ? `<a href="#/device/${a.device_id}">${esc(a.message)}</a>` : esc(a.message)}
+            ${a.ack_comment ? `<div class="muted small">${icon('user-check', 'i-sm')} ${esc(a.ack_comment)}</div>` : ''}</td>
+          <td class="small">${esc(a.site_label || '–')}</td>
           <td class="small">${esc(a.rule_name)}</td>
           <td class="small" title="${esc(fmtTime(a.opened_at))}">${esc(fmtAgo(a.opened_at))}</td>
-          <td class="small">${a.resolved_at ? esc(fmtTime(a.resolved_at)) : '–'}</td></tr>`).join('')}</tbody></table></div>`
-        : empty(tab === 'open' ? 'Keine aktiven Alarme – alles im grünen Bereich.' : 'Noch keine Alarme ausgelöst.');
+          <td class="small">${a.resolved_at ? esc(fmtTime(a.resolved_at)) : ackCell(a)}</td></tr>`).join('')}</tbody></table></div>`
+        : empty(tab === 'open' ? 'Keine aktiven Alarme – alles im grünen Bereich.' : 'Noch keine Alarme ausgelöst.')}`;
     }
     view().innerHTML = `<div class="card">
       <div class="tabs">${tabs.map(([k, l]) => `<button type="button" data-tab="${k}" class="${k === tab ? 'active' : ''}">${esc(l)}</button>`).join('')}</div>
       ${body}</div>`;
     $$('.tabs button').forEach((b) => b.addEventListener('click', () => { tab = b.dataset.tab; render(); }));
+    $('#alert-site')?.addEventListener('change', (ev) => { site = ev.target.value ? Number(ev.target.value) : null; render(); });
+    bindAck(view(), render);
     if (tab === 'rules') bindRules();
   };
 
   async function renderRules() {
-    const [rules, channels] = await Promise.all([api('/alert-rules'), api('/channels')]);
-    state.rulesCache = { rules, channels };
+    const [rules, channels, groups] = await Promise.all([api('/alert-rules'), api('/channels'), api('/groups').catch(() => [])]);
+    state.rulesCache = { rules, channels, groups };
     const chName = (id) => (channels.find((c) => c.id === id) || {}).name || '?';
+    const groupName = (id) => (groups.find((g) => g.id === id) || {}).name || '?';
     const condition = (r) => {
       const k = RULE_KINDS[r.kind] || {};
       if (r.kind === 'device_down') return `länger als ${r.duration_min} Min.`;
@@ -68,13 +78,16 @@ async function viewAlerts(_arg, params) {
     return `<div class="page-head"><p class="muted">Regeln bestimmen, wann du benachrichtigt wirst.
       ${channels.length ? '' : ' <b>Lege zuerst unter „Benachrichtigungen“ einen Kanal an.</b>'}</p>
       <button type="button" id="rule-add">${icon('plus')}Regel anlegen</button></div>
-      ${rules.length ? `<div class="table-wrap"><table><thead><tr><th>Regel</th><th>Typ</th><th>Gerät</th><th>Bedingung</th><th>Kanäle</th><th>Aktiv</th><th></th></tr></thead>
+      ${rules.length ? `<div class="table-wrap"><table><thead><tr><th>Regel</th><th>Typ</th><th>Gilt für</th><th>Bedingung</th><th>Kanäle</th><th>Aktiv</th><th></th></tr></thead>
       <tbody>${rules.map((r) => `<tr>
         <td>${esc(r.name)}</td>
         <td><span class="cell-dev">${icon((RULE_KINDS[r.kind] || {}).icon || 'bell', 'i-sm')}${esc((RULE_KINDS[r.kind] || {}).label || r.kind)}</span></td>
-        <td class="small">${esc(r.device_label || 'Alle Geräte')}</td>
+        <td class="small">${esc(r.device_label || r.check_label || 'Alle')}${r.site_label ? `<div><span class="chip">${icon('building', 'i-sm')}${esc(r.site_label)}</span></div>` : ''}
+          ${r.tag ? `<span class="chip">#${esc(r.tag)}</span>` : ''}${r.severity ? `<span class="chip">${esc(SEV_LABEL[r.severity])}</span>` : ''}</td>
         <td class="small">${esc(condition(r))}</td>
-        <td class="small">${r.channel_ids.length ? r.channel_ids.map((c) => `<span class="chip">${esc(chName(c))}</span>`).join('') : `<span class="ch-warn" title="Diese Regel meldet nur innerhalb von NetPulse – keine E-Mail, kein Push">${icon('alert-triangle', 'i-sm')} kein Kanal – nur in NetPulse</span>`}</td>
+        <td class="small">${r.group_ids.length ? r.group_ids.map((g) => `<span class="chip">${icon('users', 'i-sm')}${esc(groupName(g))}</span>`).join('') : ''}
+          ${r.escalate_after_min ? `<span class="chip" title="Eskalation">↑ ${esc(r.escalate_after_min)} Min.</span>` : ''}
+          ${r.channel_ids.length || r.group_ids.length ? r.channel_ids.map((c) => `<span class="chip">${esc(chName(c))}</span>`).join('') : `<span class="ch-warn" title="Diese Regel meldet nur innerhalb von NetPulse – keine E-Mail, kein Push">${icon('alert-triangle', 'i-sm')} kein Kanal – nur in NetPulse</span>`}</td>
         <td><input type="checkbox" data-toggle="${r.id}"${r.enabled ? ' checked' : ''} aria-label="Aktiv"></td>
         <td class="actions"><button type="button" class="ghost sm" data-edit="${r.id}">${icon('edit', 'i-sm')}</button>
           <button type="button" class="ghost sm" data-del="${r.id}">${icon('trash', 'i-sm')}</button></td></tr>`).join('')}</tbody></table></div>`
@@ -83,7 +96,9 @@ async function viewAlerts(_arg, params) {
 
   function ruleToBody(r) {
     return { name: r.name, kind: r.kind, device_id: r.device_id, threshold: r.threshold, duration_min: r.duration_min,
-      channel_ids: r.channel_ids, notify_recovery: r.notify_recovery, enabled: r.enabled };
+      channel_ids: r.channel_ids, notify_recovery: r.notify_recovery, enabled: r.enabled, repeat_min: r.repeat_min, check_id: r.check_id,
+      pattern: r.pattern, site_id: r.site_id, tag: r.tag, severity: r.severity, group_ids: r.group_ids,
+      escalate_after_min: r.escalate_after_min, escalate_channel_ids: r.escalate_channel_ids, escalate_group_ids: r.escalate_group_ids };
   }
 
   function bindRules() {
@@ -101,9 +116,11 @@ async function viewAlerts(_arg, params) {
   }
 
   async function ruleDialog(rule) {
-    const { channels } = state.rulesCache;
-    const [devices, checkList] = await Promise.all([api('/devices'), api('/checks')]);
-    const r = rule || { kind: 'device_down', duration_min: 5, channel_ids: channels.map((c) => c.id), notify_recovery: true, enabled: true };
+    const { channels, groups } = state.rulesCache;
+    const [devices, checkList, tags] = await Promise.all([api('/devices'), api('/checks'), api('/devices/tags').catch(() => [])]);
+    const r = { group_ids: [], escalate_channel_ids: [], escalate_group_ids: [], escalate_after_min: 0,
+      ...(rule || { kind: 'device_down', duration_min: 5, channel_ids: channels.map((c) => c.id), notify_recovery: true, enabled: true }) };
+    const boxes = (name, list, chosen) => list.map((x) => `<label class="inline"><input type="checkbox" name="${name}" value="${x.id}"${chosen.includes(x.id) ? ' checked' : ''}>${esc(x.name)}</label>`).join('');
     const dlg = openModal(rule ? 'Regel bearbeiten' : 'Regel anlegen', `<form class="form" id="rule-form">
       <label>Art der Regel<select name="kind"${rule ? ' disabled' : ''}>${RULE_GROUPS.map(([group, kinds]) => `<optgroup label="${esc(group)}">
         ${kinds.map((k) => `<option value="${k}"${k === r.kind ? ' selected' : ''}>${esc(RULE_KINDS[k].label)}</option>`).join('')}</optgroup>`).join('')}</select></label>
@@ -123,10 +140,20 @@ async function viewAlerts(_arg, params) {
         <label id="f-threshold"><span>Schwellwert <span id="unit"></span></span><input name="threshold" type="number" step="any" value="${r.threshold ?? ''}"></label>
         <label id="f-duration">Dauer in Minuten<input name="duration_min" type="number" min="0" max="10080" value="${r.duration_min ?? 0}"></label>
       </div>
-      <label id="f-repeat">Erinnern, solange der Alarm besteht – alle … Minuten (0 = nie)<input name="repeat_min" type="number" min="0" max="10080" value="${r.repeat_min ?? 0}"></label>
+      <div class="form-row" id="f-scope">
+        <label>Sektor<select name="site_id">${siteOptions(r.site_id ?? null, { all: 'Alle Sektoren' })}</select></label>
+        <label>Nur Geräte mit Tag<input name="tag" list="rule-tags" value="${esc(r.tag || '')}" placeholder="z. B. kasse"><datalist id="rule-tags">${tags.map(([t]) => `<option value="${esc(t)}">`).join('')}</datalist></label>
+        <label>Schwere<select name="severity"><option value="">automatisch</option>${Object.entries(SEV_LABEL).map(([k, l]) => `<option value="${k}"${r.severity === k ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label>
+      </div>
+      <label id="f-repeat">Erinnern, solange der Alarm besteht und nicht bestätigt ist – alle … Minuten (0 = nie)<input name="repeat_min" type="number" min="0" max="10080" value="${r.repeat_min ?? 0}"></label>
       <fieldset><legend>Benachrichtigen über</legend><div class="checks">
         ${channels.length ? channels.map((c) => `<label class="inline"><input type="checkbox" name="ch" value="${c.id}"${r.channel_ids.includes(c.id) ? ' checked' : ''}>${esc(c.name)}</label>`).join('')
-          : '<span class="muted">Noch keine Kanäle – unter „Benachrichtigungen“ anlegen.</span>'}</div></fieldset>
+          : '<span class="muted">Noch keine Kanäle – unter „Benachrichtigungen“ anlegen.</span>'}</div>
+        ${groups.length ? `<div class="muted small">Gruppen (App-Push und E-Mail an die Mitglieder)</div><div class="checks">${boxes('grp', groups, r.group_ids)}</div>` : ''}</fieldset>
+      <fieldset id="f-escalate"><legend>Eskalation</legend>
+        <label>Wenn nach … Minuten niemand bestätigt hat (0 = keine Eskalation)<input name="escalate_after_min" type="number" min="0" max="10080" value="${r.escalate_after_min || 0}"></label>
+        <div class="checks">${boxes('esc_ch', channels, r.escalate_channel_ids)}${boxes('esc_grp', groups, r.escalate_group_ids)}</div>
+        <p class="hint">Einmalige Meldung an diese Kanäle und Gruppen, z. B. an die Teamleitung.</p></fieldset>
       <label class="inline" id="f-recovery"><input type="checkbox" name="notify_recovery"${r.notify_recovery ? ' checked' : ''}> Entwarnung senden, wenn behoben</label>
       <label class="inline"><input type="checkbox" name="enabled"${r.enabled ? ' checked' : ''}> Regel aktiv</label>
       <div class="actions"><button type="submit">${icon('check')}Speichern</button></div></form>`);
@@ -146,6 +173,8 @@ async function viewAlerts(_arg, params) {
       $('#f-device', dlg).hidden = !!def.check || !!def.job;
       $('#f-recovery', dlg).hidden = !(k === 'device_down' || k === 'check_down' || def.unit);
       $('#f-repeat', dlg).hidden = !(k === 'device_down' || k === 'check_down' || def.unit);
+      $('#f-escalate', dlg).hidden = $('#f-repeat', dlg).hidden;
+      $('#f-scope', dlg).hidden = !!def.job;
       if (!rule && def.unit && !form.threshold.value) form.threshold.value = k === 'temperature' ? 70 : k === 'cert_expiry' ? 14 : k === 'job_missing' ? 26 : 90;
     };
     form.kind.addEventListener('change', update);
@@ -164,6 +193,13 @@ async function viewAlerts(_arg, params) {
         notify_recovery: form.notify_recovery.checked,
         enabled: form.enabled.checked,
         repeat_min: Number(form.repeat_min.value || 0),
+        site_id: !RULE_KINDS[form.kind.value].job && form.site_id.value ? Number(form.site_id.value) : null,
+        tag: !RULE_KINDS[form.kind.value].job ? form.tag.value.trim().toLowerCase() || null : null,
+        severity: form.severity.value || null,
+        group_ids: $$('input[name="grp"]:checked', form).map((c) => Number(c.value)),
+        escalate_after_min: Number(form.escalate_after_min.value || 0),
+        escalate_channel_ids: $$('input[name="esc_ch"]:checked', form).map((c) => Number(c.value)),
+        escalate_group_ids: $$('input[name="esc_grp"]:checked', form).map((c) => Number(c.value)),
       };
       attempt(async () => {
         if (rule) await api(`/alert-rules/${rule.id}`, { method: 'PATCH', body });
@@ -200,7 +236,31 @@ async function viewEvents() {
 // Netzwerke
 // ---------------------------------------------------------------------------
 
+/** Eigener Such-Zeitplan eines Netzes als Formularfelder (leer = globaler Zeitplan) */
+function netScheduleFields(sch) {
+  const mode = sch ? sch.mode : '';
+  return `<div class="form-row"><label>Such-Zeitplan<select name="sched_mode"><option value=""${!mode ? ' selected' : ''}>wie global eingestellt</option>
+      <option value="daily"${mode === 'daily' ? ' selected' : ''}>täglich um …</option><option value="interval"${mode === 'interval' ? ' selected' : ''}>alle … Minuten</option>
+      <option value="manual"${mode === 'manual' ? ' selected' : ''}>nur manuell</option></select></label>
+    <label data-sched="daily">Uhrzeiten (z. B. 03:00, 13:00)<input name="sched_times" value="${esc(sch && sch.times ? sch.times.join(', ') : '03:00')}"></label>
+    <label data-sched="interval">Abstand (Minuten)<input name="sched_interval" type="number" min="5" max="10080" value="${sch ? sch.interval_min || 60 : 60}"></label></div>`;
+}
+
+function bindNetSchedule(form) {
+  const sync = () => $$('[data-sched]', form).forEach((el) => { el.hidden = el.dataset.sched !== form.sched_mode.value; });
+  form.sched_mode.addEventListener('change', sync);
+  sync();
+}
+
+function readNetSchedule(form) {
+  const mode = form.sched_mode.value;
+  if (!mode) return null;
+  return { mode, interval_min: Number(form.sched_interval.value || 60), on_start: false,
+    times: form.sched_times.value.split(/[,;\s]+/).map((t) => t.trim()).filter(Boolean) };
+}
+
 async function viewNetworks() {
+  await loadSites();
   // Nur Netzliste und Scan-Fortschritt werden laufend aktualisiert – die Formulare bleiben beim Tippen unberührt
   view().innerHTML = `
     <div class="notice">${icon('shield-lock')}<span>Nur eigene oder ausdrücklich freigegebene Netze eintragen – das Scannen fremder
@@ -212,25 +272,34 @@ async function viewNetworks() {
         <div id="net-list"><div class="empty">Lade …</div></div></section>
       <section class="card span-1"><header><h2>${icon('plus')}Netz hinzufügen</h2></header>
         <form class="form" id="net-form">
-          <label>Netz (CIDR)<input name="cidr" placeholder="192.168.178.0/24" required></label>
+          <label>Netz (CIDR, IPv4 oder IPv6)<input name="cidr" placeholder="192.168.178.0/24" required></label>
           <label>Name<input name="name" placeholder="Heimnetz" maxlength="100" required></label>
+          <label>Sektor<select name="site_id">${siteOptions(1, { perm: 'networks.manage' })}</select></label>
+          <div class="form-row"><label>VLAN<input name="vlan_id" type="number" min="1" max="4094"></label>
+            <label>Gateway<input name="gateway" placeholder="192.168.178.1"></label></div>
           <button type="submit">${icon('radar')}Hinzufügen &amp; sofort scannen</button>
           <p class="hint">Ein neues Netz wird sofort gescannt – auch wenn gerade ein anderer Scan läuft.</p>
         </form></section>
     </div>
+    <div class="grid" id="probe-area"></div>
     <div class="grid" id="sched-area"></div>`;
 
+  let networks = [];
   const render = async () => {
-    const [networks, scan] = await Promise.all([api('/networks'), api('/scan/status')]);
+    let scan;
+    [networks, scan] = await Promise.all([api('/networks'), api('/scan/status')]);
     $('#scan-area').innerHTML = scanBanner(scan);
-    $('#net-list').innerHTML = networks.length ? `<div class="table-wrap"><table><thead><tr><th>Netz</th><th>Geräte</th><th>Letzter Scan</th><th></th></tr></thead>
+    $('#net-list').innerHTML = networks.length ? `<div class="table-wrap"><table><thead><tr><th>Netz</th><th>Sektor</th><th>Geräte</th><th>Letzter Scan</th><th></th></tr></thead>
       <tbody>${networks.map((n) => {
         const running = scan.running && scan.network === n.cidr;
-        return `<tr><td><div class="mono">${esc(n.cidr)}</div><div class="muted small">${esc(n.name)}</div></td>
+        return `<tr><td><div class="mono">${esc(n.cidr)}</div><div class="muted small">${esc(n.name)}${n.vlan_id ? ` · VLAN ${esc(n.vlan_id)}` : ''}${n.gateway ? ` · GW ${esc(n.gateway)}` : ''}</div>
+          ${n.description ? `<div class="muted small">${esc(n.description)}</div>` : ''}</td>
+        <td class="small">${esc(n.site_name)}${n.probe ? `<div class="muted">über Probe ${esc(n.probe)}</div>` : ''}${n.schedule ? '<div class="muted">eigener Zeitplan</div>' : ''}${n.enabled ? '' : '<div><span class="badge plain">aus</span></div>'}</td>
         <td>${n.device_count}</td>
         <td class="small">${running ? `<span class="badge accent">läuft · ${pct(scan.done, scan.total)} %</span>`
           : n.last_scan_at ? `${esc(fmtAgo(n.last_scan_at))} · ${n.last_scan_found} aktiv · ${n.last_scan_duration_s} s` : '<span class="muted">noch nicht</span>'}</td>
         <td class="actions"><button class="ghost sm" data-scan="${n.id}" type="button" title="Jetzt scannen">${icon('refresh', 'i-sm')}</button>
+          <button class="ghost sm" data-net-edit="${n.id}" type="button" title="Bearbeiten">${icon('edit', 'i-sm')}</button>
           <button class="ghost sm" data-del="${n.id}" data-cidr="${esc(n.cidr)}" type="button" title="Entfernen">${icon('trash', 'i-sm')}</button></td></tr>`;
       }).join('')}</tbody></table></div>` : empty('Noch keine Netze – rechts eines hinzufügen.', 'topology-star-3');
     applyWidths(view());
@@ -243,7 +312,8 @@ async function viewNetworks() {
     const form = ev.target;
     const f = new FormData(form);
     attempt(async () => {
-      await api('/networks', { method: 'POST', body: { cidr: f.get('cidr'), name: f.get('name') } });
+      await api('/networks', { method: 'POST', body: { cidr: f.get('cidr'), name: f.get('name'), site_id: Number(f.get('site_id')) || null,
+        vlan_id: f.get('vlan_id') ? Number(f.get('vlan_id')) : null, gateway: f.get('gateway').trim() || null } });
       form.reset();
       setTimeout(render, 1500);
     }, 'Netz hinzugefügt – Scan startet');
@@ -254,6 +324,33 @@ async function viewNetworks() {
       attempt(async () => { await api(`/networks/${scanBtn.dataset.scan}/scan`, { method: 'POST' }); setTimeout(render, 1500); }, 'Scan gestartet');
       return;
     }
+    const edit = ev.target.closest('[data-net-edit]');
+    if (edit) {
+      const n = networks.find((x) => x.id === Number(edit.dataset.netEdit));
+      const dlg = openModal(`Netz ${n.cidr}`, `<form class="form" id="net-edit">
+        <label>Name<input name="name" required maxlength="100" value="${esc(n.name)}"></label>
+        <label>Beschreibung<input name="description" maxlength="300" value="${esc(n.description || '')}"></label>
+        <label>Sektor<select name="site_id">${siteOptions(n.site_id, { perm: 'networks.manage' })}</select></label>
+        <div class="form-row"><label>VLAN<input name="vlan_id" type="number" min="1" max="4094" value="${n.vlan_id ?? ''}"></label>
+          <label>Gateway<input name="gateway" value="${esc(n.gateway || '')}"></label></div>
+        ${netScheduleFields(n.schedule)}
+        <label class="inline"><input type="checkbox" name="enabled"${n.enabled ? ' checked' : ''}> Netz durchsuchen</label>
+        <div class="actions"><button type="submit">${icon('check')}Speichern</button></div></form>`);
+      const form = $('#net-edit', dlg);
+      bindNetSchedule(form);
+      form.addEventListener('submit', (e2) => {
+        e2.preventDefault();
+        const e = form.elements;
+        const schedule = readNetSchedule(e);
+        attempt(async () => {
+          await api(`/networks/${n.id}`, { method: 'PATCH', body: { name: e.name.value.trim(), description: e.description.value.trim(), site_id: Number(e.site_id.value),
+            vlan_id: e.vlan_id.value ? Number(e.vlan_id.value) : null, gateway: e.gateway.value.trim(), enabled: e.enabled.checked, schedule, schedule_global: !schedule } });
+          dlg.close();
+          await render();
+        }, 'Netz gespeichert');
+      });
+      return;
+    }
     const del = ev.target.closest('[data-del]');
     if (del) {
       if (!confirm(`Netz ${del.dataset.cidr} entfernen? Bereits gefundene Geräte bleiben erhalten.`)) return;
@@ -261,8 +358,59 @@ async function viewNetworks() {
     }
   });
   await render();
+  await renderProbes();
   await renderSchedule();
   autoRefresh(render, 5);
+}
+
+/** Probes: NetPulse-Ableger, die Netze und Geräte eines entfernten Sektors vor Ort prüfen */
+async function renderProbes() {
+  const area = $('#probe-area');
+  const probes = await api('/probes');
+  const used = new Set(probes.map((p) => p.site_id));
+  const free = siteTree(sitesCache.list).filter(({ site }) => site.id !== 1 && !used.has(site.id) && can('networks.manage', site.id));
+  area.innerHTML = `<section class="card span-3"><header><h2>${icon('antenna-bars-5')}Probes für entfernte Sektoren</h2></header>
+    <p class="muted">Eine Probe läuft in der Filiale bzw. im abgeschotteten Netz (<code>netpulse probe</code>, siehe <code>deploy/probe-stack.yml</code>),
+      sucht dort Geräte, prüft sie und meldet die Ergebnisse über ausgehendes HTTPS. Netze und Geräte eines Sektors mit Probe prüft der Server nicht mehr selbst.</p>
+    ${probes.length ? `<div class="table-wrap"><table><thead><tr><th>Probe</th><th>Sektor</th><th>Zustand</th><th>Zuletzt gemeldet</th><th></th></tr></thead><tbody>
+      ${probes.map((p) => `<tr><td>${esc(p.name)}${p.version ? `<div class="muted small">Version ${esc(p.version)}${p.address ? ` · ${esc(p.address)}` : ''}</div>` : ''}
+          ${p.last_error ? `<div class="small error">${esc(p.last_error)}</div>` : ''}</td>
+        <td>${esc(p.site)}</td>
+        <td>${!p.enabled ? '<span class="badge plain">aus</span>' : p.online ? '<span class="badge st-up">verbunden</span>' : '<span class="badge st-down">keine Verbindung</span>'}</td>
+        <td class="small">${p.last_seen ? esc(fmtAgo(p.last_seen)) : '<span class="muted">noch nie</span>'}</td>
+        <td class="actions"><button class="ghost sm" type="button" data-probe-toggle="${p.id}" title="${p.enabled ? 'Abschalten' : 'Einschalten'}">${icon(p.enabled ? 'player-pause' : 'player-play', 'i-sm')}</button>
+          <button class="ghost sm" type="button" data-probe-key="${p.id}" title="Neuen Schlüssel erzeugen">${icon('key', 'i-sm')}</button>
+          <button class="ghost sm" type="button" data-probe-del="${p.id}" title="Entfernen">${icon('trash', 'i-sm')}</button></td></tr>`).join('')}
+      </tbody></table></div>` : empty('Noch keine Probe eingerichtet.', 'antenna-bars-5')}
+    ${free.length ? `<form class="form-row" id="probe-form"><label>Name<input name="name" required maxlength="80" placeholder="z. B. Probe Filiale Nord"></label>
+      <label>Sektor<select name="site_id">${free.map(({ site, depth }) => `<option value="${site.id}">${'  '.repeat(depth)}${esc(site.name)}</option>`).join('')}</select></label>
+      <button type="submit">${icon('plus')}Probe anlegen</button></form>` : ''}</section>`;
+  const showKey = (token) => openModal('Schlüssel der Probe', `<p>Der Schlüssel wird nur jetzt angezeigt. In der Filiale als <code>PROBE_TOKEN</code> eintragen:</p>
+    <p><code class="token-show">${esc(token)}</code></p>
+    <p class="hint">Dazu <code>NETPULSE_SERVER</code> mit der Adresse dieses Servers (https://…). Die Probe braucht nur ausgehend HTTPS.</p>`);
+  $('#probe-form', area)?.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const e = ev.target.elements;
+    attempt(async () => {
+      const r = await api('/probes', { method: 'POST', body: { name: e.name.value.trim(), site_id: Number(e.site_id.value) } });
+      await loadSites(true);
+      await renderProbes();
+      showKey(r.token);
+    });
+  });
+  area.querySelector('section').addEventListener('click', (ev) => {
+    const btn = ev.target.closest('[data-probe-toggle],[data-probe-key],[data-probe-del]');
+    if (!btn) return;
+    const p = probes.find((x) => x.id === Number(btn.dataset.probeToggle || btn.dataset.probeKey || btn.dataset.probeDel));
+    if (btn.dataset.probeToggle) {
+      attempt(async () => { await api(`/probes/${p.id}`, { method: 'PATCH', body: { enabled: !p.enabled } }); await renderProbes(); });
+    } else if (btn.dataset.probeKey) {
+      if (!confirm(`Neuen Schlüssel für „${p.name}“ erzeugen? Der alte wird sofort ungültig.`)) return;
+      attempt(async () => { const r = await api(`/probes/${p.id}/token`, { method: 'POST' }); showKey(r.token); });
+    } else if (confirm(`Probe „${p.name}“ entfernen? Der Server prüft den Sektor ${p.site} dann wieder selbst.`)) {
+      attempt(async () => { await api(`/probes/${p.id}`, { method: 'DELETE' }); await loadSites(true); await renderProbes(); }, 'Probe entfernt');
+    }
+  });
 }
 
 const SCHEDULE_MODES = {
@@ -768,83 +916,6 @@ async function viewChannels() {
 // Benutzer, Audit-Log, Konto
 // ---------------------------------------------------------------------------
 
-async function viewUsers() {
-  const render = async () => {
-    const [users, sec] = await Promise.all([api('/users'), api('/settings/security')]);
-    view().innerHTML = `
-      <div class="grid">
-        <section class="card span-2 table-wrap"><table>
-          <thead><tr><th>Benutzer</th><th>Rolle</th><th>2FA</th><th>Angelegt</th><th>Letzte Anmeldung</th><th></th></tr></thead>
-          <tbody>${users.map((u) => `<tr><td><span class="cell-dev">${icon('user', 'i-sm')}${esc(u.username)}</span></td>
-            <td>${u.role === 'admin' ? '<span class="badge accent">Administrator</span>' : '<span class="badge plain">Nur lesen</span>'}</td>
-            <td>${u.totp_enabled ? `<span class="badge st-up">aktiv</span>${u.id !== state.user.id ? ` <button class="ghost sm" data-totp="${u.id}" data-name="${esc(u.username)}" type="button" title="Zwei-Faktor zurücksetzen (z. B. Handy verloren)">${icon('refresh', 'i-sm')}</button>` : ''}` : '<span class="badge warn">aus</span>'}</td>
-            <td class="small">${esc(fmtTime(u.created_at))}</td><td class="small">${esc(fmtTime(u.last_login))}</td>
-            <td class="actions">${u.id === state.user.id ? '<span class="muted small">(du)</span>' : `<button class="ghost sm" data-kick="${u.id}" data-name="${esc(u.username)}" type="button" title="Überall abmelden">${icon('logout', 'i-sm')}</button>
-              <button class="ghost sm" data-pw="${u.id}" data-name="${esc(u.username)}" type="button" title="Neues Passwort setzen">${icon('key', 'i-sm')}</button>
-              <button class="ghost sm" data-del="${u.id}" data-name="${esc(u.username)}" type="button">${icon('trash', 'i-sm')}</button>`}</td></tr>`).join('')}
-          </tbody></table></section>
-        <section class="card span-1"><header><h2>${icon('shield-lock')}Zwei-Faktor-Pflicht</h2></header>
-          <form class="form" id="sec-form">
-            <label class="inline"><input type="checkbox" name="require"${sec.require_totp ? ' checked' : ''}${sec.forced_by_env ? ' disabled' : ''}>
-              Alle Benutzer müssen 2FA nutzen</label>
-            <p class="hint">${sec.forced_by_env ? 'Fest eingeschaltet über <code>REQUIRE_TOTP=true</code>.'
-              : 'Wer 2FA noch nicht hat, muss sie nach der nächsten Anmeldung zuerst einrichten und kommt vorher an nichts anderes heran.'}
-              ${sec.users_without_totp ? `<br>Noch ohne 2FA: <b>${esc(sec.users_without_totp)}</b> Benutzer.` : ''}</p>
-          </form></section>
-        <section class="card span-1"><header><h2>${icon('plus')}Benutzer anlegen</h2></header>
-          <form class="form" id="user-form">
-            <label>Benutzername<input name="username" required minlength="3" maxlength="32" autocomplete="off"></label>
-            <label>Passwort (mind. 12 Zeichen)<input name="password" type="password" required minlength="12" autocomplete="new-password"></label>
-            <label>Rolle<select name="role"><option value="viewer">Nur lesen</option><option value="admin">Administrator</option></select></label>
-            <button type="submit">Anlegen</button>
-          </form></section>
-      </div>`;
-    $('#sec-form input[name="require"]').addEventListener('change', (ev) => {
-      const on = ev.target.checked;
-      if (on && !confirm('2FA für alle Benutzer vorschreiben? Benutzer ohne 2FA müssen sie bei der nächsten Aktion zuerst einrichten.')) {
-        ev.target.checked = false;
-        return;
-      }
-      attempt(async () => { await api('/settings/security', { method: 'PUT', body: { require_totp: on } }); await render(); },
-        on ? '2FA ist jetzt Pflicht' : '2FA-Pflicht aufgehoben').then((ok) => { if (!ok) ev.target.checked = !on; });
-    });
-    $('#user-form').addEventListener('submit', (ev) => {
-      ev.preventDefault();
-      const f = new FormData(ev.target);
-      attempt(async () => {
-        await api('/users', { method: 'POST', body: { username: f.get('username'), password: f.get('password'), role: f.get('role') } });
-        await render();
-      }, 'Benutzer angelegt');
-    });
-    $$('[data-kick]').forEach((btn) => btn.addEventListener('click', () => {
-      if (!confirm(`„${btn.dataset.name}“ auf allen Geräten abmelden?`)) return;
-      attempt(async () => { const r = await api(`/users/${btn.dataset.kick}/sessions`, { method: 'DELETE' }); toast(`${r.ended} Sitzung(en) beendet`); });
-    }));
-    $$('[data-totp]').forEach((btn) => btn.addEventListener('click', () => {
-      if (!confirm(`Zwei-Faktor-Anmeldung von „${btn.dataset.name}“ zurücksetzen? Die Anmeldung geht danach nur mit Passwort, bis 2FA neu eingerichtet ist.`)) return;
-      attempt(async () => { await api(`/users/${btn.dataset.totp}/totp`, { method: 'DELETE' }); await render(); }, 'Zwei-Faktor-Anmeldung zurückgesetzt');
-    }));
-    $$('[data-pw]').forEach((btn) => btn.addEventListener('click', () => {
-      const dlg = openModal(`Neues Passwort für „${btn.dataset.name}“`, `<form class="form" id="pw-reset-form">
-          <label>Neues Passwort (mind. 12 Zeichen)<input name="password" type="password" required minlength="12" autocomplete="new-password"></label>
-          <label>Wiederholen<input name="repeat" type="password" required minlength="12" autocomplete="new-password"></label>
-          <p class="hint">Der Benutzer wird überall abgemeldet und sollte das Passwort danach unter „Mein Konto“ selbst ändern.</p>
-          <div class="actions"><button type="submit">${icon('check')}Setzen</button></div></form>`);
-      $('#pw-reset-form', dlg).addEventListener('submit', (ev) => {
-        ev.preventDefault();
-        const e = ev.target.elements;
-        if (e.password.value !== e.repeat.value) { toast('Die Passwörter stimmen nicht überein', true); return; }
-        attempt(async () => { await api(`/users/${btn.dataset.pw}/password`, { method: 'PUT', body: { password: e.password.value } }); dlg.close(); }, 'Passwort gesetzt');
-      });
-    }));
-    $$('[data-del]').forEach((btn) => btn.addEventListener('click', () => {
-      if (!confirm(`Benutzer „${btn.dataset.name}“ löschen?`)) return;
-      attempt(async () => { await api(`/users/${btn.dataset.del}`, { method: 'DELETE' }); await render(); }, 'Benutzer gelöscht');
-    }));
-  };
-  await render();
-}
-
 const AUDIT_LABEL = {
   login: 'Anmeldung', login_failed: 'Fehlgeschlagene Anmeldung', password_change: 'Passwort geändert',
   device_update: 'Gerät geändert', device_delete: 'Gerät gelöscht', device_credentials: 'Zugangsdaten zugeordnet',
@@ -855,16 +926,39 @@ const AUDIT_LABEL = {
   discovery_schedule: 'Such-Zeitplan geändert', live_settings: 'Echtzeit-Abfrage geändert',
   smtp_update: 'E-Mail-Server geändert', session_end: 'Sitzung beendet', session_end_others: 'Andere Sitzungen beendet', sessions_revoked: 'Benutzer überall abgemeldet', login_blocked: 'Anmeldung gesperrt', status_page: 'Statusseite geändert', maintenance_add: 'Wartung angelegt', maintenance_update: 'Wartung geändert', maintenance_delete: 'Wartung gelöscht', check_add: 'Dienst angelegt', check_update: 'Dienst geändert', check_delete: 'Dienst gelöscht', totp_enabled: '2FA eingeschaltet', totp_disabled: '2FA ausgeschaltet', totp_reset: '2FA zurückgesetzt', push_subscribe: 'Push-Gerät angemeldet',
   rule_add: 'Regel angelegt', rule_update: 'Regel geändert', rule_delete: 'Regel gelöscht',
+  user_update: 'Benutzer geändert', role_add: 'Rolle angelegt', role_update: 'Rolle geändert', role_delete: 'Rolle gelöscht',
+  group_add: 'Gruppe angelegt', group_update: 'Gruppe geändert', group_delete: 'Gruppe gelöscht', token_add: 'API-Schlüssel angelegt',
+  token_delete: 'API-Schlüssel gelöscht', kiosk_login: 'Leitstand-Bildschirm angemeldet', site_add: 'Sektor angelegt', site_update: 'Sektor geändert',
+  site_delete: 'Sektor gelöscht', devices_move: 'Geräte verschoben', alert_ack: 'Alarm bestätigt', alert_unack: 'Bestätigung zurückgenommen',
+  network_update: 'Netz geändert', reauth: 'Erneut bestätigt', vault_rotate: 'Tresor-Schlüssel getauscht', probe_add: 'Probe angelegt',
+  probe_delete: 'Probe gelöscht', oidc_settings: 'Zentrale Anmeldung geändert', login_oidc: 'Anmeldung (zentral)',
 };
 
-async function viewAudit() {
-  const entries = await api('/audit?limit=500');
-  view().innerHTML = `<div class="card table-wrap"><table>
+async function viewAudit(_arg, params) {
+  await loadSites();
+  const p = params || new URLSearchParams();
+  const q = new URLSearchParams({ limit: '500' });
+  ['user', 'action', 'q', 'site'].forEach((k) => { if (p.get(k)) q.set(k, p.get(k)); });
+  const entries = await api(`/audit?${q}`);
+  view().innerHTML = `<form class="card form-row audit-filter" id="audit-filter">
+      <label>Benutzer<input name="user" value="${esc(p.get('user') || '')}"></label>
+      <label>Aktion beginnt mit<input name="action" value="${esc(p.get('action') || '')}" placeholder="z. B. login, device_"></label>
+      <label>Suchtext<input name="q" value="${esc(p.get('q') || '')}"></label>
+      <label>Sektor<select name="site">${siteOptions(p.get('site') ? Number(p.get('site')) : null, { all: 'Alle' })}</select></label>
+      <button type="submit">${icon('filter')}Filtern</button></form>
+    <div class="card table-wrap"><table>
       <thead><tr><th>Zeit</th><th>Benutzer</th><th>Aktion</th><th>Details</th></tr></thead>
       <tbody>${entries.map((e) => `<tr><td class="small">${esc(fmtTime(e.time))}</td><td>${esc(e.username || '–')}</td>
         <td>${e.action === 'login_failed' ? `<span class="badge warn">${esc(AUDIT_LABEL[e.action])}</span>` : esc(AUDIT_LABEL[e.action] || e.action)}</td>
         <td class="mono small">${Object.keys(e.detail || {}).length ? esc(JSON.stringify(e.detail)) : ''}</td></tr>`).join('')
         || `<tr><td colspan="4">${empty('Keine Einträge.')}</td></tr>`}</tbody></table></div>`;
+  $('#audit-filter').addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const f = new FormData(ev.target);
+    const next = new URLSearchParams();
+    for (const [k, v] of f.entries()) if (String(v).trim()) next.set(k, String(v).trim());
+    location.hash = `#/audit${next.toString() ? `?${next}` : ''}`;
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1176,7 +1270,8 @@ async function viewAccount() {
     <div class="grid">
       <section class="card span-1"><header><h2>${icon('user')}Angemeldet als</h2></header>
         <dl class="details"><dt>Benutzer</dt><dd>${esc(state.user.username)}</dd>
-          <dt>Rolle</dt><dd>${isAdmin() ? 'Administrator' : 'Nur lesen'}</dd></dl></section>
+          <dt>Rollen</dt><dd>${esc((state.user.roles || []).join(', ') || 'keine')}</dd>
+          <dt>Gilt für</dt><dd>${perms().global.length ? 'alle Sektoren' : esc(Object.keys(perms().sites).length ? `${Object.keys(perms().sites).length} Sektor(en)` : '–')}</dd></dl></section>
       <section class="card span-1"><header><h2>${icon('lock')}Passwort ändern</h2></header>
         <form class="form" id="pw-form">
           <label>Aktuelles Passwort<input name="old" type="password" required autocomplete="current-password"></label>
@@ -1190,11 +1285,13 @@ async function viewAccount() {
         <button type="button" class="ghost sm" id="sess-others">${icon('logout', 'i-sm')}Alle anderen abmelden</button></header><div id="sess-box"><div class="empty">Lade …</div></div></section>
       <section class="card span-3"><header><h2>${icon('device-mobile')}NetPulse-App &amp; Push-Nachrichten</h2></header><div id="push-box"><div class="empty">Lade …</div></div></section>
       <section class="card span-3"><header><h2>${icon('bell')}Alarmtöne auf diesem Gerät</h2></header><div id="sound-box"></div></section>
+      <section class="card span-3"><header><h2>${icon('key')}API-Schlüssel</h2></header><div id="token-box"><div class="empty">Lade …</div></div></section>
     </div>`;
   renderTotp();
   renderSessions();
   renderPush();
   renderSounds();
+  renderTokens().catch((e) => { $('#token-box').innerHTML = `<p class="muted">${esc(e.message)}</p>`; });
   $('#sess-others').addEventListener('click', () => {
     if (!confirm('Alle anderen Geräte abmelden? Dort muss man sich danach neu anmelden.')) return;
     attempt(async () => { const r = await api('/me/sessions/others', { method: 'DELETE' }); toast(`${r.ended} Sitzung(en) beendet`); await renderSessions(); });
@@ -1252,7 +1349,8 @@ async function downloadFile(path, body) {
 }
 
 const REPORT_LABEL = { networks: 'Netze', devices: 'Geräte', credentials: 'Zugangsdaten', channels: 'Benachrichtigungskanäle', checks: 'Dienste',
-  alert_rules: 'Alarm-Regeln', maintenance: 'Wartungsfenster', users: 'Benutzer', settings: 'Einstellungen', energy_days: 'Energie-Tageswerte' };
+  alert_rules: 'Alarm-Regeln', maintenance: 'Wartungsfenster', users: 'Benutzer', settings: 'Einstellungen', energy_days: 'Energie-Tageswerte',
+  sites: 'Sektoren', roles: 'Rollen', groups: 'Gruppen' };
 
 async function viewBackup() {
   view().innerHTML = `
@@ -1280,7 +1378,22 @@ async function viewBackup() {
       <section class="card span-1"><header><h2>${icon('calendar-time')}Automatische Sicherung</h2></header><div id="bk-auto"><div class="empty">Lade …</div></div></section>
       <section class="card span-3"><header><h2>${icon('database')}Gespeicherte Sicherungen</h2>
         <button type="button" class="ghost sm" id="bk-now">${icon('player-play', 'i-sm')}Jetzt sichern</button></header><div id="bk-files"></div></section>
+      <section class="card span-3"><header><h2>${icon('key')}Tresor-Schlüssel</h2></header><div id="bk-vault"><div class="empty">Lade …</div></div></section>
     </div>`;
+  api('/vault').then((v) => {
+    $('#bk-vault').innerHTML = v.can_rotate ? `<p class="muted">Alle gespeicherten Geheimnisse (Zugangsdaten, Kanäle, 2FA, E-Mail-Server, Sicherungs-Passwort, zentrale Anmeldung)
+        werden mit einem neuen Schlüssel neu verschlüsselt. Sinnvoll, wenn jemand mit Zugriff auf den Server ausgeschieden ist oder die Datei <code>secret.key</code> in falsche Hände geraten sein könnte.
+        Der alte Schlüssel bleibt als <code>secret.key.old-…</code> im Datenverzeichnis liegen; ältere Datenbank-Sicherungen brauchen ihn weiterhin.</p>
+      <div class="actions"><button type="button" class="danger" id="vault-rotate">${icon('refresh')}Schlüssel jetzt tauschen</button></div>`
+      : `<p class="muted">Der Schlüssel ist über <code>SECRET_KEY</code> fest vorgegeben und kann deshalb nur dort getauscht werden.</p>`;
+    $('#vault-rotate')?.addEventListener('click', () => {
+      if (!confirm('Tresor-Schlüssel jetzt tauschen? Danach unbedingt die neue Datei secret.key mitsichern.')) return;
+      attempt(async () => {
+        const r = await api('/vault/rotate', { method: 'POST' });
+        toast(`${r.entries} Einträge neu verschlüsselt – alter Schlüssel: ${r.old_key}`);
+      });
+    });
+  }).catch((e) => { $('#bk-vault').innerHTML = `<p class="muted">${esc(e.message)}</p>`; });
 
   $('#bk-export').addEventListener('submit', (ev) => {
     ev.preventDefault();
@@ -1355,18 +1468,20 @@ async function viewBackup() {
 }
 
 async function viewMaintenance() {
-  const [data, devices, checks] = await Promise.all([api('/maintenance'), api('/devices'), api('/checks')]);
+  const [data, devices, checks] = await Promise.all([api('/maintenance'), api('/devices'), api('/checks'), loadSites()]);
+  const manage = canAny('maintenance.manage');
   const nameOf = (list, id, label) => { const x = list.find((i) => i.id === id); return x ? label(x) : `#${id}`; };
-  const targets = (w) => (!w.device_ids.length && !w.check_ids.length ? 'alle Geräte und Dienste'
-    : [...w.device_ids.map((id) => nameOf(devices, id, deviceLabel)), ...w.check_ids.map((id) => nameOf(checks, id, (c) => c.name))].join(', '));
+  const targets = (w) => (!w.device_ids.length && !w.check_ids.length && !(w.site_ids || []).length ? 'alle Geräte und Dienste'
+    : [...(w.site_ids || []).map((id) => `Sektor ${siteName(id)}`), ...w.device_ids.map((id) => nameOf(devices, id, deviceLabel)),
+      ...w.check_ids.map((id) => nameOf(checks, id, (c) => c.name))].join(', '));
   view().innerHTML = `
     <div class="notice info">${icon('clock')}<span>Während eines Wartungsfensters werden keine Alarme verschickt (Überwachung und Verlauf laufen weiter).
       Praktisch für nächtliche Updates, geplante Neustarts oder Umbauten.</span></div>
-    <div class="card"><header><h2>${icon('calendar-time')}Wartungsfenster</h2>${isAdmin() ? `<button type="button" id="mw-add">${icon('plus')}Hinzufügen</button>` : ''}</header>
+    <div class="card"><header><h2>${icon('calendar-time')}Wartungsfenster</h2>${manage ? `<button type="button" id="mw-add">${icon('plus')}Hinzufügen</button>` : ''}</header>
       ${data.windows.length ? `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Wann</th><th>Betrifft</th><th>Status</th><th></th></tr></thead>
       <tbody>${data.windows.map((w) => `<tr><td>${esc(w.name)}</td><td class="small">${esc(describeWindow(w))}</td><td class="small">${esc(targets(w))}</td>
         <td>${!w.enabled ? '<span class="badge plain">aus</span>' : w.active ? '<span class="badge warn">aktiv</span>' : '<span class="badge plain">geplant</span>'}</td>
-        <td class="actions">${isAdmin() ? `<button class="ghost sm" data-edit="${w.id}" type="button">${icon('edit', 'i-sm')}</button>
+        <td class="actions">${manage ? `<button class="ghost sm" data-edit="${w.id}" type="button">${icon('edit', 'i-sm')}</button>
           <button class="ghost sm" data-del="${w.id}" type="button">${icon('trash', 'i-sm')}</button>` : ''}</td></tr>`).join('')}</tbody></table></div>`
       : empty('Keine Wartungsfenster.', 'calendar-time')}</div>`;
   $('#mw-add')?.addEventListener('click', () => windowDialog(null));
@@ -1379,7 +1494,7 @@ async function viewMaintenance() {
   function windowDialog(w) {
     const localInput = (iso) => { if (!iso) return ''; const d = new Date(iso); d.setMinutes(d.getMinutes() - d.getTimezoneOffset()); return d.toISOString().slice(0, 16); };
     const now = new Date();
-    const m = w || { kind: 'weekly', days: [1, 2, 3, 4, 5, 6, 7], time_from: '03:00', time_to: '04:00', device_ids: [], check_ids: [], enabled: true,
+    const m = w || { kind: 'weekly', days: [1, 2, 3, 4, 5, 6, 7], time_from: '03:00', time_to: '04:00', device_ids: [], check_ids: [], site_ids: [], enabled: true,
       starts_at: now.toISOString(), ends_at: new Date(now.getTime() + 3600000).toISOString() };
     const pick = (name, list, chosen, label) => `<div class="pick-list">${list.map((x) => `<label class="inline"><input type="checkbox" name="${name}" value="${x.id}"${chosen.includes(x.id) ? ' checked' : ''}>
       <span class="ellipsis">${esc(label(x))}</span></label>`).join('') || '<span class="muted small">keine</span>'}</div>`;
@@ -1395,7 +1510,8 @@ async function viewMaintenance() {
         <label>Ende<input name="ends_at" type="datetime-local" value="${localInput(m.ends_at)}"></label></div>
       <h3 class="sub">Betrifft (nichts gewählt = alles)</h3>
       <input type="search" id="mw-filter" placeholder="Geräte/Dienste filtern …">
-      <div class="form-row"><div><div class="muted small">Geräte</div>${pick('dev', devices, m.device_ids, (d) => `${deviceLabel(d)} – ${d.ip}`)}</div>
+      ${sitesCache.list.length > 1 || !can('maintenance.manage') ? `<div><div class="muted small">Ganze Sektoren</div>${pick('site', sitesCache.list.filter((x) => can('maintenance.manage', x.id)), m.site_ids || [], (x) => x.name)}</div>` : ''}
+      <div class="form-row"><div><div class="muted small">Geräte</div>${pick('dev', devices.filter((d) => can('maintenance.manage', d.site_id)), m.device_ids, (d) => `${deviceLabel(d)} – ${d.ip}`)}</div>
         <div><div class="muted small">Dienste</div>${pick('chk', checks, m.check_ids, (c) => c.name)}</div></div>
       <label class="inline"><input type="checkbox" name="enabled"${m.enabled ? ' checked' : ''}> Aktiv</label>
       <div class="actions"><button type="submit">${icon('check')}Speichern</button></div></form>`);
@@ -1414,7 +1530,7 @@ async function viewMaintenance() {
       const ids = (n) => $$(`input[name="${n}"]:checked`, form).map((c) => Number(c.value));
       const body = { name: e.name.value.trim(), kind: e.kind.value, days: ids('day'), time_from: e.time_from.value, time_to: e.time_to.value,
         starts_at: e.starts_at.value ? new Date(e.starts_at.value).toISOString() : null, ends_at: e.ends_at.value ? new Date(e.ends_at.value).toISOString() : null,
-        device_ids: ids('dev'), check_ids: ids('chk'), enabled: e.enabled.checked };
+        device_ids: ids('dev'), check_ids: ids('chk'), site_ids: ids('site'), enabled: e.enabled.checked };
       attempt(async () => {
         if (w) await api(`/maintenance/${w.id}`, { method: 'PATCH', body });
         else await api('/maintenance', { method: 'POST', body });

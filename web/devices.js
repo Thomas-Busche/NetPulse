@@ -14,11 +14,12 @@ function writePref(key, value) {
 
 /** Gerät von Hand anlegen – z. B. außerhalb der Scan-Netze, per VPN oder im Internet */
 async function addDeviceDialog() {
-  const credentials = await api('/credentials').catch(() => []);
+  const [credentials] = await Promise.all([can('credentials.manage') ? api('/credentials').catch(() => []) : [], loadSites()]);
   const kindLabel = { snmp_v2c: 'SNMP v2c', snmp_v3: 'SNMP v3', ssh_password: 'SSH (Passwort)', ssh_key: 'SSH (Schlüssel)', http: 'HTTP / Shelly', unifi: 'UniFi', fritzbox: 'FRITZ!Box', opnsense: 'OPNsense', mikrotik: 'MikroTik' };
   const dlg = openModal('Gerät hinzufügen', `<form class="form" id="add-dev-form">
       <label>IP-Adresse oder Hostname<input name="address" required autofocus maxlength="253" placeholder="z. B. 192.168.1.20 oder nas.fritz.box"></label>
       <label>Name (optional)<input name="name" maxlength="100" placeholder="z. B. NAS im Keller"></label>
+      <label>Sektor<select name="site_id"><option value="">automatisch (nach Netz)</option>${siteOptions(null, { perm: 'devices.manage' })}</select></label>
       <label>Gerätetyp<select name="device_type"><option value="auto">Automatisch erkennen</option>
         ${Object.entries(TYPES).filter(([k]) => k !== 'unknown').sort((a, b) => a[1].label.localeCompare(b[1].label))
           .map(([k, t]) => `<option value="${k}">${esc(t.label)}</option>`).join('')}</select></label>
@@ -42,6 +43,7 @@ async function addDeviceDialog() {
       notes: e.notes.value.trim() || null,
       monitored: e.monitored.checked,
       credential_ids: $$('input[name="cred"]:checked', form).map((c) => Number(c.value)),
+      site_id: e.site_id.value ? Number(e.site_id.value) : null,
     };
     const btn = form.querySelector('button[type="submit"]');
     btn.disabled = true;
@@ -93,8 +95,12 @@ function connSummary(c, compact = false) {
 }
 
 async function viewDevices(_arg, params) {
-  let [devices, uc, pulse] = await Promise.all([api('/devices'), loadUnifiClients(), api('/pulse').catch(() => null)]);
-  const filters = { q: (params.get('q') || '').toLowerCase(), status: params.get('status') || '', type: params.get('type') || '', conn: params.get('conn') || '' };
+  let [devices, uc, pulse] = await Promise.all([api('/devices'), loadUnifiClients(), api('/pulse').catch(() => null), loadSites()]);
+  const filters = { q: (params.get('q') || '').toLowerCase(), status: params.get('status') || '', type: params.get('type') || '', conn: params.get('conn') || '',
+    site: params.get('site') ? Number(params.get('site')) : null, tag: params.get('tag') || '' };
+  // Sektor inkl. Unter-Sektoren
+  const siteSet = (id) => { const out = [id]; for (let i = 0; i < out.length; i += 1) sitesCache.list.filter((x) => x.parent_id === out[i]).forEach((x) => { if (!out.includes(x.id)) out.push(x.id); }); return out; };
+  const tagsPresent = [...new Set(devices.flatMap((d) => d.tags || []))].sort();
   let mode = readPref('np-dev-view', 'cards');
 
   const typesPresent = [...new Set(devices.map((d) => d.device_type))].sort((a, b) => typeInfo(a).label.localeCompare(typeInfo(b).label));
@@ -108,10 +114,12 @@ async function viewDevices(_arg, params) {
         </select>
         <select id="type-filter" aria-label="Gerätetyp"><option value="">Alle Typen</option>
           ${typesPresent.map((t) => `<option value="${esc(t)}">${esc(typeInfo(t).label)}</option>`).join('')}</select>
+        ${sitesCache.list.length > 1 ? `<select id="site-filter" aria-label="Sektor">${siteOptions(filters.site, { all: 'Alle Sektoren' })}</select>` : ''}
+        ${tagsPresent.length ? `<select id="tag-filter" aria-label="Tag"><option value="">Alle Tags</option>${tagsPresent.map((t) => `<option value="${esc(t)}"${t === filters.tag ? ' selected' : ''}>#${esc(t)}</option>`).join('')}</select>` : ''}
         <span id="conn-filter-slot"></span>
       </div>
       <div class="actions"><span class="muted" id="count"></span>
-        <button type="button" id="dev-add" class="admin-only">${icon('plus')}Gerät hinzufügen</button>
+        ${canAny('devices.manage') ? `<button type="button" id="dev-add">${icon('plus')}Gerät hinzufügen</button>` : ''}
         <div class="seg"><button type="button" data-mode="cards" title="Karten">${icon('layout-grid')}</button>
         <button type="button" data-mode="table" title="Tabelle">${icon('list')}</button></div></div>
     </div>
@@ -136,7 +144,7 @@ async function viewDevices(_arg, params) {
   let candidates = [];
   let importedList = [];
   const loadImportInfo = async () => {
-    if (!isAdmin()) return;
+    if (!canAny('devices.manage')) return;
     const [p, i] = await Promise.all([api('/clients/import/preview').catch(() => ({ candidates: [] })), api('/devices/imported').catch(() => ({ devices: [] }))]);
     candidates = p.candidates;
     importedList = i.devices;
@@ -221,6 +229,8 @@ async function viewDevices(_arg, params) {
 
   const matches = (d) => {
     if (filters.type && d.device_type !== filters.type) return false;
+    if (filters.site && !siteSet(filters.site).includes(d.site_id)) return false;
+    if (filters.tag && !(d.tags || []).includes(filters.tag)) return false;
     if (filters.conn) {
       const c = uc.byDevice.get(d.id);
       if (!c) return false;
@@ -231,7 +241,7 @@ async function viewDevices(_arg, params) {
     if (['up', 'down', 'unknown'].includes(filters.status) && (!d.monitored || d.status !== filters.status)) return false;
     if (!filters.q) return true;
     const c = uc.byDevice.get(d.id) || {};
-    const hay = [d.name, d.reported_name, d.hostname, d.ip, d.mac, d.vendor, d.os, d.model, d.notes, typeInfo(d.device_type).label,
+    const hay = [d.name, d.reported_name, d.hostname, d.ip, d.mac, d.vendor, d.os, d.model, d.notes, typeInfo(d.device_type).label, d.site_name, ...(d.tags || []),
       c.uplink_name, c.ssid, c.network, ...(d.open_ports || []).map(portLabel)].join(' ').toLowerCase();
     return hay.includes(filters.q);
   };
@@ -256,7 +266,8 @@ async function viewDevices(_arg, params) {
         <div><label>${d.status === 'down' ? 'offline' : d.status === 'up' ? 'online' : 'Status'}</label><b class="mono">${esc(d.monitored ? fmtSince(d.status_since) : '–')}</b></div>
       </div>
       <div class="dc-spark" title="Antwortzeit der letzten 2 Stunden">${spark(p.rtt, { tone: d.status === 'down' ? 'down' : 'accent', min: 0 })}</div>
-      <div class="meta">${statusBadge(d)}${liveWatt(d)}<span>${d.has_credentials ? `${icon('key', 'i-sm')} ` : ''}${typeInfo(d.device_type).label}</span></div>
+      <div class="meta">${statusBadge(d)}${liveWatt(d)}${d.flapping ? '<span class="badge warn" title="Wechselt häufig zwischen online und offline">flattert</span>' : ''}<span>${d.has_credentials ? `${icon('key', 'i-sm')} ` : ''}${typeInfo(d.device_type).label}</span></div>
+      ${sitesCache.list.length > 1 || (d.tags || []).length ? `<div class="dc-tags">${sitesCache.list.length > 1 ? `<span class="chip">${icon('building', 'i-sm')}${esc(d.site_name)}</span>` : ''}${(d.tags || []).map((t) => `<span class="chip">#${esc(t)}</span>`).join('')}</div>` : ''}
     </a>`;
   };
 
@@ -265,7 +276,7 @@ async function viewDevices(_arg, params) {
       <td><div class="cell-dev">${devIcon(d, 'sm')}<div class="ellipsis"><div>${esc(deviceLabel(d))}${inventoryWarn(d)} ${liveWatt(d)}</div>
         ${(d.reported_name || d.hostname) && deviceLabel(d) !== (d.reported_name || d.hostname) ? `<div class="muted small">${esc(d.reported_name || d.hostname)}</div>` : ''}</div></div></td>
       <td>${statusBadge(d)}</td>
-      <td class="mono">${esc(d.ip)}</td>
+      <td class="mono">${esc(d.ip)}${sitesCache.list.length > 1 ? `<div class="muted small">${esc(d.site_name)}</div>` : ''}</td>
       <td><div class="mono small">${esc(d.mac || '–')}</div><div class="muted small">${esc(d.vendor || '')}</div></td>
       <td class="small">${esc(d.os || typeInfo(d.device_type).label)}</td>
       ${hasConn() ? `<td class="small">${connSummary(uc.byDevice.get(d.id))}</td>` : ''}
@@ -294,9 +305,11 @@ async function viewDevices(_arg, params) {
   $('#q').addEventListener('input', (ev) => { filters.q = ev.target.value.trim().toLowerCase(); render(); });
   $('#status-filter').addEventListener('change', (ev) => { filters.status = ev.target.value; render(); });
   $('#type-filter').addEventListener('change', (ev) => { filters.type = ev.target.value; render(); });
+  $('#site-filter')?.addEventListener('change', (ev) => { filters.site = ev.target.value ? Number(ev.target.value) : null; render(); });
+  $('#tag-filter')?.addEventListener('change', (ev) => { filters.tag = ev.target.value; render(); });
   $$('.seg button').forEach((b) => b.addEventListener('click', () => { mode = b.dataset.mode; writePref('np-dev-view', mode); render(); }));
-  $('#dev-add').addEventListener('click', addDeviceDialog);
-  if (params.get('add') === '1' && isAdmin()) addDeviceDialog();
+  $('#dev-add')?.addEventListener('click', addDeviceDialog);
+  if (params.get('add') === '1' && canAny('devices.manage')) addDeviceDialog();
   $('#dev-list').addEventListener('click', (ev) => {
     const tr = ev.target.closest('tr[data-id]');
     if (tr) location.hash = `#/device/${tr.dataset.id}`;
@@ -372,8 +385,11 @@ async function viewDevice(id) {
   let tab = 'overview';
   const clientFilter = { q: '', kind: '', ap: '', sort: 'down', dir: -1 };
   let data = await api(`/devices/${encodeURIComponent(id)}?hours=${hours}`);
-  const credentials = isAdmin() ? await api('/credentials').catch(() => []) : [];
-  const allDevices = isAdmin() ? await api('/devices').catch(() => []) : [];
+  // Rechte gelten je Sektor – maßgeblich ist der Sektor dieses Geräts
+  const canDev = (perm) => can(perm, data.device.site_id);
+  const credentials = can('credentials.manage') ? await api('/credentials').catch(() => []) : [];
+  const allDevices = canDev('devices.manage') ? await api('/devices').catch(() => []) : [];
+  await loadSites();
 
   const tabs = () => {
     const inv = data.inventory || {};
@@ -388,10 +404,10 @@ async function viewDevice(id) {
     if ((inv.ssh && inv.ssh.disks && inv.ssh.disks.length) || (inv.snmp && inv.snmp.storage && inv.snmp.storage.length)) list.push(['storage', 'Speicher']);
     list.push(['history', 'Verlauf']);
     list.push(['events', 'Ereignisse']);
-    if (isAdmin() && inv.snmp) list.push(['explorer', 'SNMP-Explorer']);
+    if (canDev('devices.diagnose') && inv.snmp) list.push(['explorer', 'SNMP-Explorer']);
     list.push(['diagnose', 'Diagnose']);
-    if (isAdmin()) list.push(['syslog', 'Protokoll']);
-    if (isAdmin()) list.push(['settings', 'Einstellungen']);
+    if (canDev('devices.diagnose')) list.push(['syslog', 'Protokoll']);
+    if (canDev('devices.manage')) list.push(['settings', 'Einstellungen']);
     return list;
   };
   const isShelly = () => data.device.integration === 'shelly' || !!(data.inventory || {}).shelly;
@@ -411,7 +427,7 @@ async function viewDevice(id) {
               ${d.os ? `<span class="badge plain">${esc(d.os)}</span>` : ''}
               ${d.model ? `<span class="badge plain">${esc(d.model)}</span>` : ''}</div></div>
           <div class="actions"><a href="#/devices" class="btn ghost">${icon('chevron-left', 'i-sm')} Alle Geräte</a>
-            ${isAdmin() ? `<button type="button" id="poll-now" class="ghost">${icon('refresh')}Jetzt abfragen</button>` : ''}</div>
+            ${canDev('devices.manage') ? `<button type="button" id="poll-now" class="ghost">${icon('refresh')}Jetzt abfragen</button>` : ''}</div>
         </div>
         <div class="fact-strip">
           ${[
@@ -494,7 +510,7 @@ async function viewDevice(id) {
         ${i.speed_mbps ? '<div class="meter" data-util><span></span></div>' : ''}
         <div data-spark>${sparkline([])}</div>
         <div class="muted small">${i.speed_mbps ? `Verbindung ${esc(linkLabel(i.speed_mbps))} · ` : ''}gesamt ↓ <span data-rxb></span> · ↑ <span data-txb></span></div>
-        ${isAdmin() && !wan ? `<button type="button" class="ghost sm" data-mark-wan="${esc(i.name)}">${icon('world-www', 'i-sm')}Als Internet markieren</button>` : ''}
+        ${canDev('devices.manage') && !wan ? `<button type="button" class="ghost sm" data-mark-wan="${esc(i.name)}">${icon('world-www', 'i-sm')}Als Internet markieren</button>` : ''}
       </div>`;
 
     const cpuHistory = [];
@@ -648,7 +664,7 @@ async function viewDevice(id) {
     }
     if (!d.has_credentials) {
       return `<div class="notice info">${icon('key')}<span>Für CPU, RAM, Festplatten, Schnittstellen & Co. unter
-        ${isAdmin() ? '„Einstellungen“' : 'Einstellungen'} SNMP- oder SSH-Zugangsdaten zuordnen.</span></div>`;
+        ${canDev('devices.manage') ? '„Einstellungen“' : 'Einstellungen'} SNMP- oder SSH-Zugangsdaten zuordnen.</span></div>`;
     }
     return '';
   }
@@ -702,7 +718,7 @@ async function viewDevice(id) {
   // ----- Diagnose -----
   function tabDiagnose() {
     return `<section class="card"><header><h2>${icon('stethoscope')}Protokoll der letzten Abfrage</h2>
-        ${isAdmin() ? `<button type="button" id="diag-run">${icon('player-play')}Jetzt abfragen und protokollieren</button>` : ''}</header>
+        ${canDev('devices.diagnose') ? `<button type="button" id="diag-run">${icon('player-play')}Jetzt abfragen und protokollieren</button>` : ''}</header>
       <p class="muted small">Zeigt Schritt für Schritt, welche Abfragen (SNMP, SSH, Shelly-API, UniFi) versucht wurden und woran es gescheitert ist.
         Passwörter erscheinen hier nie.</p>
       <div id="diag-body"><div class="empty">Lade …</div></div></section>`;
@@ -1069,7 +1085,7 @@ async function viewDevice(id) {
       box.innerHTML = `<section class="card"><header><h2>${icon('chart-line')}${esc(name)}</h2>
           <div class="actions"><select id="if-range" aria-label="Zeitraum">${[[24, '24 Stunden'], [168, '7 Tage'], [720, '30 Tage']]
             .map(([h, l]) => `<option value="${h}"${h === range ? ' selected' : ''}>${l}</option>`).join('')}</select>
-          ${isAdmin() ? (isWan
+          ${canDev('devices.manage') ? (isWan
             ? `<button type="button" class="ghost sm" id="if-unwan">${icon('x', 'i-sm')}Internet-Markierung entfernen</button>`
             : `<button type="button" class="ghost sm" id="if-wan">${icon('world-www', 'i-sm')}Als Internet markieren</button>`) : ''}</div></header>
         ${lineChart(points, { series: [{ key: 'rx_bps', label: 'Empfangen' }, { key: 'tx_bps', label: 'Gesendet' }], format: fmtBps, width: 1100, height: 200 })}
@@ -1139,6 +1155,8 @@ async function viewDevice(id) {
           ${Object.entries(TYPES).map(([k, t]) => `<option value="${k}"${d.device_type_manual && d.device_type === k ? ' selected' : ''}>${esc(t.label)}</option>`).join('')}
         </select></label>
         <label>Notizen<textarea name="notes" maxlength="5000">${esc(d.notes || '')}</textarea></label>
+        <div class="form-row"><label>Sektor<select name="site_id">${siteOptions(d.site_id, { perm: 'devices.manage' })}</select></label>
+          <label>Tags (mit Komma getrennt)<input name="tags" maxlength="400" value="${esc((d.tags || []).join(', '))}" placeholder="z. B. kasse, kritisch"></label></div>
         <label class="inline"><input type="checkbox" name="monitored"${d.monitored ? ' checked' : ''}> Erreichbarkeit überwachen</label>
         <label>Hängt ab von (Switch, Access Point, Router)<select name="parent_id">
           <option value="-1"${!d.parent_manual ? ' selected' : ''}>Automatisch${!d.parent_manual && parent ? ` (${esc(deviceLabel(parent))})` : ' (aus UniFi)'}</option>
@@ -1152,7 +1170,7 @@ async function viewDevice(id) {
         <div class="actions"><button type="submit">${icon('check')}Speichern</button></div>
       </form></section>
       <section class="span-1"><h3>Zugangsdaten für tiefe Abfragen</h3>
-        ${credentials.length ? `<form class="form" id="cred-form"><div class="stack-v">
+        ${!can('credentials.manage') ? '<p class="muted">Zugangsdaten zuordnen darf nur, wer Zugangsdaten verwalten darf.</p>' : credentials.length ? `<form class="form" id="cred-form"><div class="stack-v">
           ${credentials.map((c) => `<label class="inline"><input type="checkbox" name="cred" value="${c.id}"${assigned.has(c.id) ? ' checked' : ''}>
             <span>${esc(c.name)} <span class="muted small">· ${esc(kindLabel[c.kind] || c.kind)}${c.username ? ` · ${esc(c.username)}` : ''}</span></span></label>`).join('')}
           </div><div class="actions"><button type="submit">${icon('key')}Zuordnen &amp; abfragen</button></div></form>`
@@ -1178,6 +1196,7 @@ async function viewDevice(id) {
         data.device = await api(`/devices/${id}`, {
           method: 'PATCH',
           body: { name: f.get('name'), notes: f.get('notes'), monitored: f.get('monitored') === 'on', device_type: f.get('device_type'), parent_id: Number(f.get('parent_id')),
+            site_id: Number(f.get('site_id')), tags: String(f.get('tags') || '').split(',').map((t) => t.trim()).filter(Boolean),
             ...(f.get('energy_role') ? { energy_role: f.get('energy_role') } : {}) },
         });
         render();
@@ -1252,7 +1271,7 @@ async function viewChecks() {
           ${kpi('OK', count('up'), 'circle-check', 'tone-up', '#/checks')}
           ${kpi('Warnung', count('warn'), 'alert-triangle', count('warn') ? 'tone-warn' : 'tone-muted', '#/checks')}
           ${kpi('Ausfall', count('down'), 'circle-x', count('down') ? 'tone-down' : 'tone-muted', '#/checks')}</div>
-        <div class="actions">${isAdmin() ? `<button type="button" id="check-add">${icon('plus')}Dienst hinzufügen</button>` : ''}</div></div>
+        <div class="actions">${canAny('checks.manage') ? `<button type="button" id="check-add">${icon('plus')}Dienst hinzufügen</button>` : ''}</div></div>
       ${paused}
       <div class="card">${checks.length ? `<div class="check-list">${checks.map(checkRow).join('')}</div>`
         : empty('Noch keine Dienste. Beispiele: eigene Webseite (mit Suchwort), Zertifikat des Mailservers, DNS des Routers, SSH-Port des NAS.', 'world-www')}</div>`;
@@ -1271,7 +1290,7 @@ async function viewChecks() {
         ${days != null ? kpi('Zertifikat', `${days} Tage`, 'shield-lock', days < 14 ? 'tone-warn' : 'tone-up', '#/checks') : ''}</div>
       ${lineChart(h.points, { series: [{ key: 'ms', label: 'Antwortzeit' }], format: fmtMs, height: 180, width: 720, outages: true })}
       ${beats(c.beats)}
-      ${isAdmin() ? `<div class="actions"><button type="button" id="cd-run">${icon('refresh')}Jetzt prüfen</button>
+      ${can('checks.manage', c.site_id) ? `<div class="actions"><button type="button" id="cd-run">${icon('refresh')}Jetzt prüfen</button>
         <button type="button" class="ghost" id="cd-edit">${icon('edit')}Bearbeiten</button>
         <button type="button" class="ghost" id="cd-del">${icon('trash')}Löschen</button></div>` : ''}</div>`);
     dlg.classList.add('wide');
@@ -1315,7 +1334,8 @@ async function viewChecks() {
         <label>Prüfen alle … Sekunden<input name="interval_s" type="number" min="10" max="86400" value="${esc(c.interval_s)}"></label>
         <label>Zeitlimit (s)<input name="timeout_s" type="number" min="1" max="60" value="${esc(c.timeout_s)}"></label>
         <label>Ausfall nach … Fehlversuchen<input name="retries" type="number" min="1" max="10" value="${esc(cfg.retries ?? 2)}"></label></div>
-      <label>Zugehöriges Gerät (optional)<select name="device_id"><option value="">–</option>
+      <label>Sektor<select name="site_id">${can('checks.manage') ? '<option value="">übergreifend (z. B. Internet-Dienste)</option>' : ''}${siteOptions(c.site_id ?? null, { perm: 'checks.manage' })}</select></label>
+      <label>Zugehöriges Gerät (optional – dann gilt dessen Sektor)<select name="device_id"><option value="">–</option>
         ${devices.map((d) => `<option value="${d.id}"${d.id === c.device_id ? ' selected' : ''}>${esc(deviceLabel(d))} – ${esc(d.ip)}</option>`).join('')}</select></label>
       <label class="inline"><input type="checkbox" name="enabled"${c.enabled ? ' checked' : ''}> Aktiv</label>
       <p class="hint">Alarm bei Ausfall oder ablaufendem Zertifikat: unter <a href="#/alerts?tab=rules">Alarme → Regeln</a> „Dienst ausgefallen“ bzw. „Zertifikat läuft ab“ anlegen.</p>
@@ -1339,7 +1359,8 @@ async function viewChecks() {
       if (k === 'dns') Object.assign(config, { server: e.server.value.trim(), record: e.record.value, expect: e.expect.value.trim() });
       if (k === 'http' || k === 'tls') Object.assign(config, { warn_days: Number(e.warn_days.value || 14), ignore_tls: e.ignore_tls.checked });
       const body = { kind: k, target: e.target.value.trim(), name: e.name.value.trim(), config, interval_s: Number(e.interval_s.value),
-        timeout_s: Number(e.timeout_s.value), device_id: e.device_id.value ? Number(e.device_id.value) : null, enabled: e.enabled.checked };
+        timeout_s: Number(e.timeout_s.value), device_id: e.device_id.value ? Number(e.device_id.value) : null, enabled: e.enabled.checked,
+        site_id: e.site_id.value ? Number(e.site_id.value) : null };
       attempt(async () => {
         if (check) await api(`/checks/${check.id}`, { method: 'PATCH', body });
         else await api('/checks', { method: 'POST', body });

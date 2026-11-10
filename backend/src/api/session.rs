@@ -29,23 +29,25 @@ pub async fn login(State(st): State<AppState>, headers: HeaderMap, Json(req): Js
     let username: String = req.username.trim().to_lowercase().chars().take(64).collect();
     let ip = auth::client_ip(&headers).unwrap_or_else(|| "unbekannt".into());
     // Versuch zählen, bevor geprüft wird (auch parallele Anfragen)
-    if !st.login_limiter.try_attempt(&username, &ip) {
+    if !st.login_limiter.try_attempt(&username, &ip).await {
         audit::log(&st.db, None, Some(&username), "login_blocked", json!({ "ip": ip })).await;
         return Err(ApiError::TooManyRequests);
     }
 
-    let user: Option<(i64, String, String, String)> =
-        sqlx::query_as("SELECT id, username, role, password_hash FROM users WHERE username = $1")
-            .bind(&username)
-            .fetch_optional(&st.db)
-            .await?;
+    // Gesperrte Konten und Konten der zentralen Anmeldung (OIDC) können sich nicht mit Passwort anmelden
+    let user: Option<(i64, String, String)> = sqlx::query_as(
+        "SELECT id, username, password_hash FROM users WHERE username = $1 AND NOT disabled AND auth_source = 'local'",
+    )
+    .bind(&username)
+    .fetch_optional(&st.db)
+    .await?;
 
     // Auch bei unbekanntem Benutzer einen Hash prüfen, damit die Antwortzeit nichts verrät
-    let hash = user.as_ref().map(|u| u.3.clone()).unwrap_or_else(|| auth::dummy_hash().to_string());
+    let hash = user.as_ref().map(|u| u.2.clone()).unwrap_or_else(|| auth::dummy_hash().to_string());
     let valid = auth::verify_password(req.password, hash).await;
 
     // `let … else`: Wenn das Muster nicht passt, wird der else-Zweig ausgeführt
-    let Some((id, name, role, _)) = user.filter(|_| valid) else {
+    let Some((id, name, _)) = user.filter(|_| valid) else {
         audit::log(&st.db, None, Some(&username), "login_failed", json!({ "ip": ip })).await;
         return Err(ApiError::InvalidCredentials);
     };
@@ -59,7 +61,7 @@ pub async fn login(State(st): State<AppState>, headers: HeaderMap, Json(req): Js
     if totp_enabled {
         let Some(code) = req.code.as_deref().filter(|c| !c.trim().is_empty()) else {
             // Passwort stimmt – dieser Schritt zählt nicht als Fehlversuch
-            st.login_limiter.success(&username, &ip);
+            st.login_limiter.success(&username, &ip).await;
             return Ok(Json(json!({ "totp_required": true })).into_response());
         };
         let secret: String = totp_secret
@@ -81,7 +83,7 @@ pub async fn login(State(st): State<AppState>, headers: HeaderMap, Json(req): Js
         }
     }
 
-    st.login_limiter.success(&username, &ip);
+    st.login_limiter.success(&username, &ip).await;
     let token = auth::create_session(&st.db, id, st.config.session_hours, &headers).await?;
     sqlx::query("UPDATE users SET last_login = now() WHERE id = $1")
         .bind(id)
@@ -91,8 +93,13 @@ pub async fn login(State(st): State<AppState>, headers: HeaderMap, Json(req): Js
 
     let max_age = i64::from(st.config.session_hours) * 3600;
     let cookie = auth::session_cookie(&token, max_age, st.config.cookie_secure);
-    let totp_setup_required = !totp_enabled && auth::totp_required(&st).await;
-    let user = CurrentUser { id, username: name, role, totp_setup_required };
+    let _ = totp_enabled;
+    // Mit dem neuen Cookie den Benutzer samt Rechten laden (gleiche Antwort wie GET /api/me)
+    let mut fresh = HeaderMap::new();
+    if let Ok(v) = format!("{}={token}", auth::SESSION_COOKIE).parse() {
+        fresh.insert(header::COOKIE, v);
+    }
+    let user = auth::user_from_headers(&st, &fresh).await?.ok_or(ApiError::Unauthorized)?;
     Ok(([(header::SET_COOKIE, cookie)], Json(user)).into_response())
 }
 
@@ -207,7 +214,7 @@ pub async fn totp_disable(State(st): State<AppState>, user: CurrentUser, headers
         return Err(ApiError::BadRequest("Zwei-Faktor-Anmeldung ist für alle Benutzer Pflicht und kann nicht ausgeschaltet werden".into()));
     }
     let ip = auth::client_ip(&headers).unwrap_or_else(|| "unbekannt".into());
-    if !st.login_limiter.try_attempt(&user.username, &ip) {
+    if !st.login_limiter.try_attempt(&user.username, &ip).await {
         return Err(ApiError::TooManyRequests);
     }
     let (hash, sealed, last_step): (String, Option<String>, Option<i64>) =
@@ -219,7 +226,7 @@ pub async fn totp_disable(State(st): State<AppState>, user: CurrentUser, headers
     if !secret.is_some_and(|s| crate::totp::verify(&s, &req.code, chrono::Utc::now().timestamp(), last_step).is_some()) {
         return Err(ApiError::BadRequest("Code aus der Authenticator-App ist falsch".into()));
     }
-    st.login_limiter.success(&user.username, &ip);
+    st.login_limiter.success(&user.username, &ip).await;
     sqlx::query("UPDATE users SET totp_enabled = false, totp_secret = NULL, totp_last_step = NULL WHERE id = $1")
         .bind(user.id)
         .execute(&st.db)
@@ -327,7 +334,7 @@ pub async fn push_test(State(st): State<AppState>, user: CurrentUser) -> ApiResu
         url: "/#/alerts",
         tag: "test",
     };
-    let r = crate::push::send(&st, Some(user.id), &message).await.map_err(|e| ApiError::BadRequest(format!("{e:#}")))?;
+    let r = crate::push::send(&st, Some(&[user.id]), &message).await.map_err(|e| ApiError::BadRequest(format!("{e:#}")))?;
     Ok(Json(json!({ "sent": r.ok, "failed": r.failed, "errors": r.errors })))
 }
 
@@ -405,4 +412,51 @@ pub async fn push_ack(State(st): State<AppState>, Json(req): Json<PushAck>) -> A
     .execute(&st.db)
     .await?;
     Ok(Json(json!({ "ok": true })))
+}
+
+// ---------------------------------------------------------------------------
+// Erneute Bestätigung vor kritischen Aktionen
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+pub struct Reauth {
+    password: String,
+    #[serde(default)]
+    code: Option<String>,
+}
+
+/// Passwort (und bei aktiver 2FA den Code) erneut prüfen; danach sind 10 Minuten lang kritische Aktionen möglich
+pub async fn reauth(State(st): State<AppState>, user: CurrentUser, headers: HeaderMap, Json(req): Json<Reauth>) -> ApiResult<Json<Value>> {
+    let Some(session) = user.session_hash.clone().filter(|_| !user.kiosk && !user.api_token) else {
+        return Err(ApiError::Forbidden);
+    };
+    let ip = auth::client_ip(&headers).unwrap_or_else(|| "unbekannt".into());
+    if !st.login_limiter.try_attempt(&user.username, &ip).await {
+        return Err(ApiError::TooManyRequests);
+    }
+    let (hash, source, totp_enabled, sealed, last_step): (String, String, bool, Option<String>, Option<i64>) = sqlx::query_as(
+        "SELECT password_hash, auth_source, totp_enabled, totp_secret, totp_last_step FROM users WHERE id = $1",
+    )
+    .bind(user.id)
+    .fetch_one(&st.db)
+    .await?;
+    if source != "local" {
+        return Err(ApiError::BadRequest("Konto der zentralen Anmeldung: bitte ab- und neu anmelden".into()));
+    }
+    if !auth::verify_password(req.password, hash).await {
+        audit::by(&st.db, &user, "reauth_failed", json!({ "ip": ip })).await;
+        return Err(ApiError::BadRequest("Passwort ist falsch".into()));
+    }
+    if totp_enabled {
+        let secret: Option<String> = sealed.as_deref().and_then(|s| st.vault.open_value(s).ok());
+        let code = req.code.unwrap_or_default();
+        let Some(step) = secret.and_then(|s| crate::totp::verify(&s, &code, chrono::Utc::now().timestamp(), last_step)) else {
+            return Err(ApiError::BadRequest("Code aus der Authenticator-App fehlt oder ist falsch".into()));
+        };
+        sqlx::query("UPDATE users SET totp_last_step = $2 WHERE id = $1").bind(user.id).bind(step).execute(&st.db).await?;
+    }
+    st.login_limiter.success(&user.username, &ip).await;
+    sqlx::query("UPDATE sessions SET reauth_at = now() WHERE token_hash = $1").bind(session).execute(&st.db).await?;
+    audit::by(&st.db, &user, "reauth", json!({ "ip": ip })).await;
+    Ok(Json(json!({ "ok": true, "totp": totp_enabled })))
 }

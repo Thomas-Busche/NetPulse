@@ -1976,6 +1976,7 @@ dependencies = [
  "hkdf 0.12.4",
  "hmac 0.12.1",
  "lettre",
+ "libc",
  "md-5",
  "p256 0.13.2",
  "qrcode",

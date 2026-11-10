@@ -38,6 +38,11 @@ Raspberry Pi einfach und sparsam: etwa 10–30 MB RAM für NetPulse selbst.
 | `credentials`, `device_credentials` | Zugangsdaten (Geheimnisse verschlüsselt) und ihre Zuordnung zu Geräten |
 | `device_stats` | **Hypertable**: CPU, RAM, Speicher, Temperatur, Datenrate aus SNMP/SSH |
 | `notification_channels`, `alert_rules`, `alerts` | Kanäle (Konfiguration verschlüsselt), Regeln, ausgelöste Alarme |
+| `sites` | Sektoren (Baum über `parent_id`) |
+| `roles`, `user_groups`, `group_members`, `role_assignments` | Rollen aus Rechten, Gruppen und Zuweisung an Benutzer/Gruppen je Sektor |
+| `api_tokens`, `login_attempts`, `oidc_states` | API-Schlüssel (nur Hash), Anmeldeschutz, laufende SSO-Anmeldungen |
+| `probes` | Probes je Sektor (Schlüssel nur als Hash, Lebenszeichen, Version) |
+| `dashboard_views` | Gespeicherte und geteilte Dashboard-Ansichten |
 
 Das Schema liegt in `backend/migrations/` und wird beim Start automatisch angewendet.
 Neue Änderungen kommen immer als **neue** Datei hinzu (`0002_…sql`); bestehende Migrationen werden nie geändert.
@@ -112,11 +117,22 @@ Zielgerät einmalig aktiviert und mit einem Konto mit Leserechten versehen werde
 - Netzwerkkarte (Topologie) aus den LLDP-Nachbarn
 - Wartungsfenster und Bestätigen von Alarmen
 
-**Phase 5: Firmeneinsatz**
-- Anmeldung über OIDC/SSO (Entra ID, Keycloak) und TOTP-Zwei-Faktor
-- Feinere Rechte (z. B. nur bestimmte Netze oder Gerätegruppen sehen)
+**✅ Phase 5: Firmeneinsatz und mehrere Sektoren**
+- Sektoren als Baum (Tabelle `sites`); Netze, Geräte, Dienste, Regeln und Wartungsfenster tragen `site_id`
+- Rollen aus feinen Rechten (`roles`), Gruppen (`user_groups`), Zuweisung je Sektor (`role_assignments`);
+  Prüfung im Server über den Extraktor `Need<perm::…>` und Sektor-Filter in den Abfragen, auch im Live-Stream
+- Leitstand mit Ampel je Sektor, „Jetzt kaputt“, Kiosk-Sitzungen (nur ansehen), geteilte Dashboard-Ansichten
+- Alarme: Schweregrad, Quittieren, Bereich (Sektor/Schlagwort), Gruppen-Benachrichtigung, Eskalation, Flatterschutz
+- Zentrale Anmeldung über OpenID Connect (Authorization Code + PKCE), Gruppenabgleich über einen Claim
+- API-Schlüssel, erneute Passwortabfrage vor kritischen Aktionen, Login-Sperre in der Datenbank, Tresor-Schlüsseltausch
+- **Probes** (`netpulse probe`): dasselbe Programm ohne Datenbank, holt Aufgaben per HTTPS
+  (`/api/probe/v1/config`), meldet Ergebnisse (`/results`, `/discovery`); der Server prüft Sektoren mit Probe nicht selbst
+- IPv6-Netze und -Geräte (Nachbartabelle statt Ping-Sweep)
+
+**Phase 6: Ausblick**
+- Tiefe Abfragen (SNMP/SSH) auch über Probes
 - Optionaler Agent (Rust, ein einzelnes Programm ohne Abhängigkeiten) für Geräte ohne passenden Zugang
-- Hochverfügbarkeit, IPv6-Discovery über Neighbor-Tabellen
+- Hochverfügbarkeit (zweiter Server, gemeinsame Datenbank)
 
 ## Warum diese Technik
 

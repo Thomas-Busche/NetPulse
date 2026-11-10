@@ -34,7 +34,7 @@ Weitere Dokumente:
 19. [Statusseite](#19-statusseite)
 20. [Wartung](#20-wartung)
 21. [Ereignisse, Audit-Log und System-Log](#21-ereignisse-audit-log-und-system-log)
-22. [Benutzer, Rollen und Zwei-Faktor-Anmeldung](#22-benutzer-rollen-und-zwei-faktor-anmeldung)
+22. [Benutzer, Gruppen, Rollen und Anmeldung](#22-benutzer-gruppen-rollen-und-anmeldung)
 23. [Mein Konto](#23-mein-konto)
 24. [Sicherung und Wiederherstellung](#24-sicherung-und-wiederherstellung)
 25. [Zugriff von außen](#25-zugriff-von-außen)
@@ -255,6 +255,24 @@ Das Dashboard ist **je Benutzer** frei zusammenstellbar: **Anpassen** → über 
 
 Über jeder Kachel steht der Titel; ein Klick auf Werte führt meist zur passenden Detailseite.
 
+**Geteilte Ansichten:** Wer Einstellungen verwalten darf, kann ein Dashboard-Layout als Ansicht speichern, für alle
+freigeben und als **Standard** markieren – Benutzer ohne eigenes Layout sehen dann diese Ansicht. Über den Sektor-Filter
+zeigt das Dashboard nur die Werte eines Sektors.
+
+### 6.1 Leitstand und Kiosk
+
+Der **Leitstand** ist die Übersicht für Bereitschaft und Wandbildschirm:
+
+- **Ampel je Sektor** (rot = Störung, gelb = Warnung, blau = Wartung, grün = in Ordnung) mit Zahl der Geräte, Ausfälle
+  und offenen Alarme; ein Klick filtert die Liste.
+- **„Jetzt kaputt“:** alle Geräte offline, ausgefallene Dienste und offene Alarme, nach Schweregrad sortiert;
+  quittierte Alarme sind markiert (wer, wann, Kommentar).
+- **Vollbild** und **Sektoren durchschalten** (alle 20 s der nächste Sektor) für Bildschirme in der Leitwarte.
+
+**Kiosk-Modus:** Unter *Mein Konto → API-Schlüssel* einen Schlüssel anlegen und am Bildschirm auf der Anmeldeseite
+**„Als Leitstand-Bildschirm anmelden“** wählen. Die Kiosk-Sitzung kann nur ansehen (auch wenn das Konto mehr dürfte)
+und öffnet direkt den Leitstand.
+
 ---
 
 ## 7. Geräte
@@ -359,6 +377,39 @@ Die **Erreichbarkeitsprüfung** bekannter Geräte läuft unabhängig davon jede 
 **Echtzeit (Shelly):** Hier lässt sich die schnelle Abfrage der Shellys ein-/ausschalten und der Takt einstellen
 (Standard 5 s).
 
+Jedes Netz gehört zu einem **Sektor** und kann VLAN, Gateway, Beschreibung und einen **eigenen Such-Zeitplan** haben
+(Stift-Symbol in der Liste). Netze lassen sich auch einzeln abschalten, ohne sie zu löschen.
+
+### 9.1 Sektoren
+
+Unter **Sektoren** wird das Netz in Standorte oder Bereiche gegliedert – als Baum, z. B. *Firma → Filiale Nord → Lager*.
+Netze, Geräte, Dienste, Alarmregeln und Wartungsfenster gehören jeweils zu einem Sektor. Neu gefundene Geräte landen im
+Sektor ihres Netzes; Geräte lassen sich von Hand oder gesammelt in einen anderen Sektor verschieben.
+
+Rechte gelten je Sektor (siehe [Kapitel 22](#22-benutzer-gruppen-rollen-und-anmeldung)): Wer nur für „Filiale Nord“
+berechtigt ist, sieht nur deren Geräte, Alarme, Dienste und Live-Meldungen. Ein Recht auf einen Sektor gilt auch für
+dessen Unter-Sektoren. Der Sektor **Hauptstandort** ist immer vorhanden und nimmt alles auf, was keinem anderen
+Sektor zugeordnet ist.
+
+### 9.2 Probes für entfernte Sektoren
+
+Liegt ein Sektor hinter einer Firewall oder in einer Filiale, die der Server nicht direkt erreicht, übernimmt eine
+**Probe** die Suche und Prüfung vor Ort. Sie braucht nur **ausgehend HTTPS** zum NetPulse-Server – keine
+Portfreigabe, kein VPN.
+
+1. **Netzwerke → Probes für entfernte Sektoren:** Name und Sektor wählen, **Probe anlegen**. Der Schlüssel (`npp_…`)
+   wird nur einmal angezeigt.
+2. In der Filiale den Stack `deploy/probe-stack.yml` starten (z. B. in Portainer) mit
+   `NETPULSE_SERVER=https://monitoring.example.de` und `PROBE_TOKEN=npp_…`.
+3. Nach spätestens einer Minute steht die Probe auf **verbunden**.
+
+Die Probe holt sich regelmäßig die Netze und Geräte ihres Sektors, prüft die Erreichbarkeit im Takt von
+`MONITOR_INTERVAL_SEC`, sucht die Netze im Takt der Gerätesuche ab und meldet alles zurück. Der Server prüft Sektoren
+mit Probe dann nicht mehr selbst. Eine Probe darf nur Ergebnisse für ihren eigenen Sektor melden. Ist ihr Schlüssel in
+falsche Hände geraten: **Schlüssel-Symbol → neuen Schlüssel erzeugen** (der alte gilt sofort nicht mehr) oder Probe abschalten.
+
+Tiefe Abfragen (SNMP, SSH, Shelly) laufen weiterhin vom Server aus; die Probe übernimmt Suche und Erreichbarkeit.
+
 ---
 
 ## 10. Zugangsdaten
@@ -456,11 +507,22 @@ zur Nachverfolgung sichtbar.
 | | Sicherheitshinweis (MAC/SSH-Schlüssel geändert) | – |
 
 **Für alle Regeln:**
+- **Bereich:** nur ein Sektor (samt Unter-Sektoren) und/oder nur Geräte mit einem bestimmten **Schlagwort** (z. B. `kritisch`, `server`).
+- **Schweregrad:** Kritisch, Warnung oder Hinweis (Standard je nach Art); bestimmt Sortierung, Ton und Push-Priorität.
+- **Gruppen benachrichtigen:** Mitglieder bekommen App-Push und E-Mail (über den zentralen E-Mail-Server).
+- **Eskalation:** Ist ein Alarm nach X Minuten nicht quittiert, gehen weitere Kanäle bzw. Gruppen los (einmal je Alarm).
 - **Kanäle:** wohin gemeldet wird (siehe [Kapitel 13](#13-benachrichtigungen)). Ohne Kanal erscheint der Alarm nur in NetPulse.
 - **Entwarnung senden:** meldet, wenn das Problem vorbei ist.
 - **Erinnern, solange der Alarm besteht – alle … Minuten** (0 = nie).
 - **Aktiv:** Regel vorübergehend ausschalten, ohne sie zu löschen.
 - Geräte- und Dienst-Auswahl lassen sich durchsuchen.
+
+**Quittieren:** Mit dem Haken in der Alarmliste (oder im Leitstand) übernimmt man einen Alarm – optional mit
+Kommentar („Techniker ist unterwegs“). Quittierte Alarme erinnern nicht mehr und eskalieren nicht; die Quittung lässt
+sich zurücknehmen. Dafür braucht es das Recht *Alarme quittieren* im Sektor des Alarms.
+
+**Flatterschutz:** Ein Gerät gilt erst nach `MONITOR_FAIL_THRESHOLD` Fehlschlägen in Folge (Standard 2) als offline –
+ein einzelner verlorener Ping löst keinen Alarm aus.
 
 **Intelligente Unterdrückung:**
 - **Abhängigkeiten:** Fällt ein Switch aus, kommt *ein* Alarm für den Switch – nicht einer für jedes Gerät dahinter
@@ -784,23 +846,61 @@ verbindest du das Programm einfach neu.
 
 ---
 
-## 22. Benutzer, Rollen und Zwei-Faktor-Anmeldung
+## 22. Benutzer, Gruppen, Rollen und Anmeldung
 
-*Benutzer* (Admin):
+**Rechte und Rollen.** Eine **Rolle** ist ein Bündel feiner Rechte, z. B. *Ansehen*, *Geräte bearbeiten*, *Geräte
+diagnostizieren*, *Alarme quittieren*, *Alarmregeln verwalten*, *Netze verwalten*, *Dienste verwalten*, *Wartung*,
+*Zugangsdaten verwalten*, *Benutzer verwalten*, *Einstellungen*, *Sicherung*. Mitgeliefert sind **Administrator**
+(immer alle Rechte), **Netzwerk-Techniker**, **Bereitschaft** und **Nur lesen**; eigene Rollen lassen sich unter
+*Benutzer → Rollen* anlegen.
+
+**Zuweisung je Sektor.** Rollen werden einem Benutzer oder einer **Gruppe** zugewiesen – für *alle Sektoren* oder nur
+für einen Sektor (inklusive Unter-Sektoren). Beispiel: Gruppe „Team Nord“ hat *Netzwerk-Techniker* in „Filiale Nord“
+und *Nur lesen* überall. Die Oberfläche blendet aus, was jemand nicht darf; der Server prüft jede Anfrage selbst.
+
+*Benutzer* (Recht *Benutzer verwalten*):
 
 | Aktion | |
 |---|---|
-| Benutzer anlegen | Name, Passwort (mind. 12 Zeichen), Rolle **Administrator** oder **Nur lesen** |
+| Benutzer anlegen | Name, Passwort (mind. 12 Zeichen) oder **zentrale Anmeldung**, Rollen je Sektor, Gruppen |
+| Bearbeiten | Anzeigename, E-Mail (für Gruppen-Benachrichtigungen), Rollen, Gruppen, deaktivieren |
 | Neues Passwort setzen | für einen anderen Benutzer (z. B. vergessen) – er wird überall abgemeldet |
 | 2FA zurücksetzen | z. B. Handy verloren – beendet auch alle Sitzungen des Benutzers |
 | Überall abmelden | beendet alle Sitzungen des Benutzers |
-| Löschen | der letzte Admin kann nicht gelöscht werden |
+| Löschen | es muss immer ein aktiver Administrator übrig bleiben |
+
+*Gruppen* bündeln Benutzer (z. B. „Bereitschaft“); Rollen einer Gruppe gelten für alle Mitglieder, und Alarmregeln
+können Gruppen direkt benachrichtigen.
+
+**Erneute Bestätigung.** Kritische Aktionen (Benutzer und Rollen ändern, Zugangsdaten, Sicherung, Tresor-Schlüssel,
+Probes) verlangen, dass das Passwort in den letzten 10 Minuten bestätigt wurde – NetPulse fragt dann kurz nach.
+Mit API-Schlüsseln sind diese Aktionen nicht möglich.
+
+**Zentrale Anmeldung (SSO, OpenID Connect).** Unter *Benutzer → Sicherheit*:
+
+1. Beim Anmeldedienst (Entra ID, Keycloak, Authentik, Authelia, Google Workspace …) eine Anwendung anlegen
+   (*Web*, vertraulicher Client) und als Rücksprung-Adresse `https://<PUBLIC_URL>/api/oidc/callback` eintragen.
+   `PUBLIC_URL` (bzw. `SITE_ADDRESS`) muss gesetzt sein.
+2. In NetPulse Aussteller (Issuer-URL), Client-ID und Client-Secret eintragen und einschalten. NetPulse prüft dabei, ob
+   der Dienst erreichbar ist.
+3. **Gruppen-Claim** (Standard `groups`, bei Keycloak z. B. `realm_access.roles`): Bei jeder Anmeldung wird der
+   Benutzer Mitglied aller NetPulse-Gruppen, deren *Name beim zentralen Anmeldedienst* im Claim steht – und aus den
+   übrigen so verknüpften Gruppen entfernt. So kommen die Rechte zentral aus dem Verzeichnis.
+4. **Neue Benutzer automatisch anlegen** oder Konten vorher unter *Benutzer anlegen → Anmeldung über den zentralen
+   Anmeldedienst* vorbereiten (gleicher Benutzername wie `preferred_username`). Konten mit eigenem Passwort werden
+   nie automatisch verknüpft.
+
+Auf der Anmeldeseite erscheint dann **„Anmelden mit …“**. Zwei-Faktor-Pflicht und Anmeldeschutz regelt bei diesen
+Konten der Anmeldedienst.
+
+**API-Schlüssel** (*Mein Konto*): für Skripte (`Authorization: Bearer np_…`) und Leitstand-Bildschirme; ein Schlüssel
+hat die Rechte des Kontos, optional mit Ablaufdatum.
 
 **Zwei-Faktor-Pflicht:** Schalter **„Alle Benutzer müssen 2FA nutzen“** (oder fest über `REQUIRE_TOTP=true`).
 Benutzer ohne 2FA kommen nach der Anmeldung nur noch an die Einrichtung in *Mein Konto*; bereits eingerichtete 2FA lässt
 sich dann nicht mehr ausschalten. Einschalten geht nur, wenn du 2FA selbst schon nutzt (damit du dich nicht aussperrst).
 
-**Anmeldeschutz:** Nach 5 Fehlversuchen für Benutzer+IP (bzw. 20 je IP, 50 je Benutzer) in 15 Minuten wird die
+**Anmeldeschutz:** (in der Datenbank gespeichert, gilt auch nach einem Neustart) Nach 5 Fehlversuchen für Benutzer+IP (bzw. 20 je IP, 50 je Benutzer) in 15 Minuten wird die
 Anmeldung vorübergehend gesperrt. Sitzungen laufen nach `SESSION_HOURS` (Standard 12 h) ab.
 
 **Admin-Passwort vergessen (einziger Admin)?** Auf dem Docker-Host:
@@ -868,6 +968,12 @@ docker exec netpulse-db pg_dump -U netpulse -p 5433 -h 127.0.0.1 netpulse | gzip
 
 Dazu gehört dann auch `/data/secret.key` aus dem Volume `app-data` – ohne ihn sind die gespeicherten Zugangsdaten nicht
 lesbar (oder `SECRET_KEY` fest vorgeben).
+
+**Tresor-Schlüssel tauschen:** *Sicherung → Tresor-Schlüssel → Schlüssel jetzt tauschen* verschlüsselt alle Geheimnisse
+(Zugangsdaten, Kanäle, 2FA, E-Mail-Server, Sicherungs-Passwort, zentrale Anmeldung) mit einem neuen Schlüssel. Sinnvoll,
+wenn jemand mit Zugriff auf den Server ausgeschieden ist. Der alte Schlüssel bleibt als `secret.key.old-…` liegen –
+ältere Datenbank-Abzüge brauchen ihn weiterhin. Danach die neue `secret.key` mitsichern. Mit fest vorgegebenem
+`SECRET_KEY` geht das nur über die Variable.
 
 ---
 
@@ -1054,6 +1160,16 @@ Frist automatisch gelöscht.
 | `DB_PORT` / `APP_PORT` | 5433 / 18080 | interne Ports auf dem Host (nur 127.0.0.1) |
 | `NETPULSE_VERSION` | `latest` | Image-Version (z. B. fest auf eine Version setzen) |
 | `RUST_LOG` | `info` | Ausführlichkeit des Server-Logs (`debug` für Fehlersuche) |
+| `DB_MAX_CONNECTIONS` | 20 | Größe des Datenbank-Verbindungspools (5–500) |
+| `MONITOR_FAIL_THRESHOLD` | 2 | Fehlschläge in Folge, bevor ein Gerät als offline gilt (1–20) |
+
+Nur für die **Probe** (`netpulse probe`, siehe [9.2](#92-probes-für-entfernte-sektoren)):
+
+| Variable | Standard | Bedeutung |
+|---|---|---|
+| `NETPULSE_SERVER` | – (Pflicht) | Adresse des NetPulse-Servers, `https://…` |
+| `PROBE_TOKEN` | – (Pflicht) | Schlüssel der Probe (`npp_…`) |
+| `PROBE_ALLOW_HTTP` | `false` | `true` erlaubt `http://` – nur zum Testen im LAN |
 
 ### 29.2 Ports
 

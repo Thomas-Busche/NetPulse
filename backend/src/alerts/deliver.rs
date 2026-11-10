@@ -69,11 +69,66 @@ pub async fn send_now(state: &AppState, kind: &str, config: Value, n: &Notificat
             let url = n.device_id.map_or_else(|| "/#/alerts".to_string(), |id| format!("/#/device/{id}"));
             let tag = n.vars.get("tag").cloned().unwrap_or_else(|| "netpulse".into());
             let message = crate::push::PushMessage { title: &n.title, body: &n.message, severity: n.severity.name(), url: &url, tag: &tag };
-            crate::push::send(state, None, &message).await?.into_result()?;
+            let users = app_recipients(state, n).await?;
+            crate::push::send(state, Some(&users), &message).await?.into_result()?;
             Ok(())
         }
         "email" => notify::send(kind, &with_smtp(state, config).await, n).await,
         _ => notify::send(kind, &config, n).await,
+    }
+}
+
+/// Push nur an Benutzer, die das betroffene Gerät (bzw. den Dienst) sehen dürfen;
+/// Meldungen ohne Gerät nur an Benutzer mit Sicht auf alle Sektoren.
+async fn app_recipients(state: &AppState, n: &Notification) -> Result<Vec<i64>> {
+    let site: Option<(i64,)> = if let Some(id) = n.device_id {
+        sqlx::query_as("SELECT site_id FROM devices WHERE id = $1").bind(id).fetch_optional(&state.db).await?
+    } else if let Some(id) = n.check_id {
+        sqlx::query_as("SELECT site_id FROM checks WHERE id = $1").bind(id).fetch_optional(&state.db).await?
+    } else {
+        None
+    };
+    Ok(crate::auth::users_with(&state.db, "view", site.map(|s| s.0)).await?)
+}
+
+/// An die Mitglieder von Benutzergruppen: Push an deren Geräte, E-Mail an deren Adressen (über den zentralen Server)
+pub async fn to_groups(state: &AppState, group_ids: &[i64], n: &Notification) {
+    if group_ids.is_empty() {
+        return;
+    }
+    let members: Vec<(i64, Option<String>)> = match sqlx::query_as(
+        "SELECT DISTINCT u.id, u.email FROM group_members m JOIN users u ON u.id = m.user_id
+          WHERE m.group_id = ANY($1) AND NOT u.disabled",
+    )
+    .bind(group_ids)
+    .fetch_all(&state.db)
+    .await
+    {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::warn!("Gruppenmitglieder nicht ladbar: {e}");
+            return;
+        }
+    };
+    // Nur Mitglieder, die das Gerät sehen dürfen
+    let allowed = app_recipients(state, n).await.unwrap_or_default();
+    let members: Vec<_> = members.into_iter().filter(|(id, _)| allowed.contains(id)).collect();
+    if members.is_empty() {
+        return;
+    }
+    let ids: Vec<i64> = members.iter().map(|m| m.0).collect();
+    let url = n.device_id.map_or_else(|| "/#/alerts".to_string(), |id| format!("/#/device/{id}"));
+    let tag = n.vars.get("tag").cloned().unwrap_or_else(|| "netpulse".into());
+    let message = crate::push::PushMessage { title: &n.title, body: &n.message, severity: n.severity.name(), url: &url, tag: &tag };
+    if let Err(e) = crate::push::send(state, Some(&ids), &message).await {
+        tracing::warn!("Push an Gruppe fehlgeschlagen: {e:#}");
+    }
+    let mails: Vec<String> = members.into_iter().filter_map(|m| m.1).filter(|m| m.contains('@')).collect();
+    if !mails.is_empty() && load_smtp(state).await.contains_key("host") {
+        let config = with_smtp(state, json!({ "to": mails.join(",") })).await;
+        if let Err(e) = notify::send("email", &config, n).await {
+            tracing::warn!("E-Mail an Gruppe fehlgeschlagen: {e:#}");
+        }
     }
 }
 

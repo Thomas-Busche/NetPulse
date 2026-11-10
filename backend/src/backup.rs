@@ -33,9 +33,10 @@ use sqlx::{PgPool, Postgres, Transaction};
 use crate::AppState;
 
 pub const FORMAT: &str = "netpulse-backup";
-const VERSION: u32 = 1;
+/// 2: Sektoren, Rollen, Gruppen, Rechte je Sektor, geteilte Dashboards
+const VERSION: u32 = 2;
 /// Einstellungen, die mitgesichert werden (keine Laufzeit-Zustände wie „letzter Scan“)
-const SETTINGS: &[&str] = &["discovery_schedule", "smtp", "status_page", "security", "energy", "live_settings"];
+const SETTINGS: &[&str] = &["discovery_schedule", "smtp", "status_page", "security", "energy", "live_settings", "oidc"];
 const KDF_M: u32 = 64 * 1024;
 const KDF_T: u32 = 3;
 
@@ -147,7 +148,11 @@ pub async fn export(state: &AppState) -> Result<Value> {
     for c in &mut channels {
         c["config"] = open(&c["config"]);
     }
-    let mut users = rows(db, "SELECT id, username, password_hash, role, totp_secret, totp_enabled FROM users").await?;
+    let mut users = rows(
+        db,
+        "SELECT id, username, password_hash, totp_secret, totp_enabled, display_name, email, disabled, auth_source, oidc_subject FROM users",
+    )
+    .await?;
     for u in &mut users {
         u["totp_secret"] = open(&u["totp_secret"]);
     }
@@ -160,6 +165,13 @@ pub async fn export(state: &AppState) -> Result<Value> {
         if s["key"] == "smtp" {
             s["value"] = json!({ "plain": open(&s["value"]["sealed"]) });
         }
+        if s["key"] == "oidc" {
+            let plain = open(&s["value"]["client_secret_sealed"]);
+            if let Some(map) = s["value"].as_object_mut() {
+                map.remove("client_secret_sealed");
+                map.insert("client_secret_plain".into(), plain);
+            }
+        }
     }
 
     Ok(json!({
@@ -167,21 +179,29 @@ pub async fn export(state: &AppState) -> Result<Value> {
         "version": VERSION,
         "created_at": chrono::Utc::now(),
         "app_version": env!("CARGO_PKG_VERSION"),
-        "networks": rows(db, "SELECT cidr::text AS cidr, name, enabled FROM networks").await?,
+        "sites": rows(db, "SELECT id, name, description, parent_id, position FROM sites ORDER BY id").await?,
+        "networks": rows(db, "SELECT cidr::text AS cidr, name, enabled, site_id, vlan_id, host(gateway) AS gateway, description, schedule
+                                FROM networks").await?,
         "credentials": credentials,
         "devices": rows(db, "SELECT id, host(ip) AS ip, mac, hostname, name, notes, monitored, device_type, device_type_manual,
                                     wan_interface, wan_interface_manual, parent_id, parent_manual, energy_role, ssh_host_key, tls_pin,
-                                    vendor, model, os, reported_name, integration, first_seen, open_ports
+                                    vendor, model, os, reported_name, integration, first_seen, open_ports, site_id, tags
                                FROM devices").await?,
         "device_credentials": rows(db, "SELECT device_id, credential_id FROM device_credentials").await?,
         "channels": channels,
-        "checks": rows(db, "SELECT id, name, kind, target, config, interval_s, timeout_s, device_id, enabled FROM checks").await?,
+        "checks": rows(db, "SELECT id, name, kind, target, config, interval_s, timeout_s, device_id, enabled, site_id FROM checks").await?,
         "alert_rules": rows(db, "SELECT name, kind, device_id, threshold, duration_min, channel_ids, notify_recovery, enabled,
-                                        repeat_min, check_id, pattern FROM alert_rules").await?,
-        "maintenance": rows(db, "SELECT name, kind, starts_at, ends_at, days, time_from, time_to, device_ids, check_ids, enabled
+                                        repeat_min, check_id, pattern, site_id, tag, severity, group_ids, escalate_after_min,
+                                        escalate_channel_ids, escalate_group_ids FROM alert_rules").await?,
+        "maintenance": rows(db, "SELECT name, kind, starts_at, ends_at, days, time_from, time_to, device_ids, check_ids, site_ids, enabled
                                    FROM maintenance_windows").await?,
         "users": users,
+        "roles": rows(db, "SELECT id, name, description, permissions, all_permissions, builtin FROM roles").await?,
+        "groups": rows(db, "SELECT id, name, description, oidc_group FROM user_groups").await?,
+        "group_members": rows(db, "SELECT group_id, user_id FROM group_members").await?,
+        "role_assignments": rows(db, "SELECT role_id, user_id, group_id, site_id FROM role_assignments").await?,
         "dashboards": rows(db, "SELECT user_id, layout FROM dashboards").await?,
+        "dashboard_views": rows(db, "SELECT name, owner_id, layout, site_id, shared, group_ids, is_default FROM dashboard_views").await?,
         "settings": settings,
         "energy_daily": rows(db, "SELECT day, device_id, pos_wh, neg_wh, minutes FROM energy_daily").await?,
     }))
@@ -193,6 +213,7 @@ pub async fn export(state: &AppState) -> Result<Value> {
 
 #[derive(Serialize, Default, Debug)]
 pub struct RestoreReport {
+    pub sites: usize,
     pub networks: usize,
     pub devices: usize,
     pub credentials: usize,
@@ -201,6 +222,8 @@ pub struct RestoreReport {
     pub alert_rules: usize,
     pub maintenance: usize,
     pub users: usize,
+    pub roles: usize,
+    pub groups: usize,
     pub settings: usize,
     pub energy_days: usize,
 }
@@ -234,15 +257,69 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
     let mut tx = state.db.begin().await?;
     let s = |v: &Value| v.as_str().map(str::to_string);
 
+    // Sektoren (Name + übergeordneter Sektor); der Standard-Sektor bleibt der Standard-Sektor
+    let mut site_ids = Ids::new();
+    site_ids.insert(crate::sites::DEFAULT_SITE, crate::sites::DEFAULT_SITE);
+    let sites: Vec<&Value> = list(p, "sites").collect();
+    // Eltern vor Kindern anlegen; höchstens so viele Runden wie Sektoren (Schutz vor Kreisen)
+    for _ in 0..=sites.len() {
+        let mut progress = false;
+        for site in &sites {
+            let (Some(old), Some(name)) = (site["id"].as_i64(), site["name"].as_str()) else { continue };
+            if site_ids.contains_key(&old) {
+                continue;
+            }
+            let parent = match site["parent_id"].as_i64() {
+                None => None,
+                Some(p) => match site_ids.get(&p) {
+                    Some(id) => Some(*id),
+                    None => continue, // Eltern-Sektor kommt erst in einer späteren Runde
+                },
+            };
+            let existing: Option<i64> = sqlx::query_scalar("SELECT id FROM sites WHERE name = $1 AND parent_id IS NOT DISTINCT FROM $2 LIMIT 1")
+                .bind(name)
+                .bind(parent)
+                .fetch_optional(&mut *tx)
+                .await?;
+            let id = match existing {
+                Some(id) => id,
+                None => {
+                    sqlx::query_scalar("INSERT INTO sites (name, description, parent_id, position) VALUES ($1, $2, $3, $4) RETURNING id")
+                        .bind(name)
+                        .bind(site["description"].as_str().unwrap_or(""))
+                        .bind(parent)
+                        .bind(site["position"].as_i64().unwrap_or(0) as i32)
+                        .fetch_one(&mut *tx)
+                        .await?
+                }
+            };
+            site_ids.insert(old, id);
+            report.sites += 1;
+            progress = true;
+        }
+        if !progress {
+            break;
+        }
+    }
+    // Ältere Sicherungen ohne Sektoren: alles in den Standard-Sektor
+    let site_of = |v: &Value| map_id(&site_ids, v).unwrap_or(crate::sites::DEFAULT_SITE);
+
     // Netze
     for n in list(p, "networks") {
         sqlx::query(
-            "INSERT INTO networks (cidr, name, enabled) VALUES ($1::cidr, $2, $3)
-             ON CONFLICT (cidr) DO UPDATE SET name = EXCLUDED.name, enabled = EXCLUDED.enabled",
+            "INSERT INTO networks (cidr, name, enabled, site_id, vlan_id, gateway, description, schedule)
+             VALUES ($1::cidr, $2, $3, $4, $5, $6::inet, COALESCE($7, ''), $8)
+             ON CONFLICT (site_id, cidr) DO UPDATE SET name = EXCLUDED.name, enabled = EXCLUDED.enabled, vlan_id = EXCLUDED.vlan_id,
+                    gateway = EXCLUDED.gateway, description = EXCLUDED.description, schedule = EXCLUDED.schedule",
         )
         .bind(s(&n["cidr"]))
         .bind(s(&n["name"]))
         .bind(n["enabled"].as_bool().unwrap_or(true))
+        .bind(site_of(&n["site_id"]))
+        .bind(n["vlan_id"].as_i64().map(|v| v as i32))
+        .bind(s(&n["gateway"]))
+        .bind(s(&n["description"]))
+        .bind(n.get("schedule").filter(|v| !v.is_null()))
         .execute(&mut *tx)
         .await?;
         report.networks += 1;
@@ -291,19 +368,22 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
     let mut dev_ids = Ids::new();
     for d in list(p, "devices") {
         let Some(old) = d["id"].as_i64() else { continue };
+        let mut d = d.clone();
+        d["site_id"] = json!(site_of(&d["site_id"]));
         let id: i64 = sqlx::query_scalar(
             "INSERT INTO devices (ip, mac, hostname, name, notes, monitored, device_type, device_type_manual, wan_interface,
                                   wan_interface_manual, parent_manual, energy_role, ssh_host_key, tls_pin, vendor, model, os,
-                                  reported_name, integration, first_seen, open_ports)
+                                  reported_name, integration, first_seen, open_ports, site_id, tags)
              SELECT r.ip::inet, r.mac, r.hostname, r.name, r.notes, COALESCE(r.monitored, true), r.device_type,
                     COALESCE(r.device_type_manual, false), r.wan_interface, COALESCE(r.wan_interface_manual, false),
                     COALESCE(r.parent_manual, false), r.energy_role, r.ssh_host_key, r.tls_pin, r.vendor, r.model, r.os,
-                    r.reported_name, r.integration, COALESCE(r.first_seen, now()), COALESCE(r.open_ports, '{}')
+                    r.reported_name, r.integration, COALESCE(r.first_seen, now()), COALESCE(r.open_ports, '{}'),
+                    r.site_id, COALESCE(r.tags, '{}')
                FROM jsonb_to_record($1) AS r(ip text, mac text, hostname text, name text, notes text, monitored bool,
                     device_type text, device_type_manual bool, wan_interface text, wan_interface_manual bool, parent_manual bool,
                     energy_role text, ssh_host_key text, tls_pin text, vendor text, model text, os text, reported_name text,
-                    integration text, first_seen timestamptz, open_ports int[])
-             ON CONFLICT (ip) DO UPDATE SET
+                    integration text, first_seen timestamptz, open_ports int[], site_id bigint, tags text[])
+             ON CONFLICT (site_id, ip) DO UPDATE SET tags = EXCLUDED.tags,
                     name = EXCLUDED.name, notes = EXCLUDED.notes, monitored = EXCLUDED.monitored,
                     device_type = CASE WHEN EXCLUDED.device_type_manual THEN EXCLUDED.device_type ELSE devices.device_type END,
                     device_type_manual = EXCLUDED.device_type_manual,
@@ -317,7 +397,7 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
                     first_seen = LEAST(devices.first_seen, EXCLUDED.first_seen)
              RETURNING id",
         )
-        .bind(d)
+        .bind(&d)
         .fetch_one(&mut *tx)
         .await?;
         dev_ids.insert(old, id);
@@ -382,6 +462,7 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
             continue;
         };
         let device = map_id(&dev_ids, &c["device_id"]);
+        let site = map_id(&site_ids, &c["site_id"]);
         let interval = c["interval_s"].as_i64().unwrap_or(60) as i32;
         let timeout = c["timeout_s"].as_i64().unwrap_or(10) as i32;
         let enabled = c["enabled"].as_bool().unwrap_or(true);
@@ -390,21 +471,22 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
                 .await?;
         let id = match existing {
             Some(id) => {
-                sqlx::query("UPDATE checks SET config = $2, interval_s = $3, timeout_s = $4, device_id = $5, enabled = $6 WHERE id = $1")
+                sqlx::query("UPDATE checks SET config = $2, interval_s = $3, timeout_s = $4, device_id = $5, enabled = $6, site_id = $7 WHERE id = $1")
                     .bind(id)
                     .bind(&c["config"])
                     .bind(interval)
                     .bind(timeout)
                     .bind(device)
                     .bind(enabled)
+                    .bind(site)
                     .execute(&mut *tx)
                     .await?;
                 id
             }
             None => {
                 sqlx::query_scalar(
-                    "INSERT INTO checks (name, kind, target, config, interval_s, timeout_s, device_id, enabled)
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
+                    "INSERT INTO checks (name, kind, target, config, interval_s, timeout_s, device_id, enabled, site_id)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id",
                 )
                 .bind(name)
                 .bind(kind)
@@ -414,6 +496,7 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
                 .bind(timeout)
                 .bind(device)
                 .bind(enabled)
+                .bind(site)
                 .fetch_one(&mut *tx)
                 .await?
             }
@@ -422,23 +505,73 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
         report.checks += 1;
     }
 
+    // Rollen (Name): eingebaute bleiben unverändert, eigene werden übernommen
+    let mut role_ids = Ids::new();
+    for r in list(p, "roles") {
+        let (Some(old), Some(name)) = (r["id"].as_i64(), r["name"].as_str()) else { continue };
+        let perms: Vec<String> = r["permissions"]
+            .as_array()
+            .map(|a| a.iter().filter_map(Value::as_str).filter(|p| crate::auth::is_permission(p)).map(str::to_string).collect())
+            .unwrap_or_default();
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO roles (name, description, permissions, all_permissions) VALUES ($1, $2, $3, $4)
+             ON CONFLICT (name) DO UPDATE SET
+                    description = CASE WHEN roles.builtin THEN roles.description ELSE EXCLUDED.description END,
+                    permissions = CASE WHEN roles.builtin THEN roles.permissions ELSE EXCLUDED.permissions END,
+                    all_permissions = CASE WHEN roles.builtin THEN roles.all_permissions ELSE EXCLUDED.all_permissions END
+             RETURNING id",
+        )
+        .bind(name)
+        .bind(r["description"].as_str().unwrap_or(""))
+        .bind(&perms)
+        .bind(r["all_permissions"].as_bool().unwrap_or(false))
+        .fetch_one(&mut *tx)
+        .await?;
+        role_ids.insert(old, id);
+        report.roles += 1;
+    }
+
+    // Benutzergruppen (Name)
+    let mut group_ids = Ids::new();
+    for g in list(p, "groups") {
+        let (Some(old), Some(name)) = (g["id"].as_i64(), g["name"].as_str()) else { continue };
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO user_groups (name, description, oidc_group) VALUES ($1, $2, $3)
+             ON CONFLICT (name) DO UPDATE SET description = EXCLUDED.description, oidc_group = EXCLUDED.oidc_group
+             RETURNING id",
+        )
+        .bind(name)
+        .bind(g["description"].as_str().unwrap_or(""))
+        .bind(s(&g["oidc_group"]))
+        .fetch_one(&mut *tx)
+        .await?;
+        group_ids.insert(old, id);
+        report.groups += 1;
+    }
+
     // Alarm-Regeln (Name + Art)
     for r in list(p, "alert_rules") {
         let (Some(name), Some(kind)) = (r["name"].as_str(), r["kind"].as_str()) else { continue };
         // Regel für ein bestimmtes Gerät/einen Dienst, das es nicht mehr gibt → auslassen statt „für alle“
         let device = map_id(&dev_ids, &r["device_id"]);
         let check = map_id(&check_ids, &r["check_id"]);
-        if (!r["device_id"].is_null() && device.is_none()) || (!r["check_id"].is_null() && check.is_none()) {
+        let site = map_id(&site_ids, &r["site_id"]);
+        if (!r["device_id"].is_null() && device.is_none()) || (!r["check_id"].is_null() && check.is_none()) || (!r["site_id"].is_null() && site.is_none()) {
             continue;
         }
         let existing = find(&mut tx, "SELECT id FROM alert_rules WHERE name = $1 AND kind = $2 ORDER BY id LIMIT 1", &[name, kind]).await?;
         sqlx::query(
             "INSERT INTO alert_rules (id, name, kind, device_id, threshold, duration_min, channel_ids, notify_recovery, enabled,
-                                      repeat_min, check_id, pattern)
-             VALUES (COALESCE($1, nextval(pg_get_serial_sequence('alert_rules', 'id'))), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                                      repeat_min, check_id, pattern, site_id, tag, severity, group_ids, escalate_after_min,
+                                      escalate_channel_ids, escalate_group_ids)
+             VALUES (COALESCE($1, nextval(pg_get_serial_sequence('alert_rules', 'id'))), $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                     $13, $14, $15, $16, COALESCE($17, 0), $18, $19)
              ON CONFLICT (id) DO UPDATE SET device_id = EXCLUDED.device_id, threshold = EXCLUDED.threshold,
                     duration_min = EXCLUDED.duration_min, channel_ids = EXCLUDED.channel_ids, notify_recovery = EXCLUDED.notify_recovery,
-                    enabled = EXCLUDED.enabled, repeat_min = EXCLUDED.repeat_min, check_id = EXCLUDED.check_id, pattern = EXCLUDED.pattern",
+                    enabled = EXCLUDED.enabled, repeat_min = EXCLUDED.repeat_min, check_id = EXCLUDED.check_id, pattern = EXCLUDED.pattern,
+                    site_id = EXCLUDED.site_id, tag = EXCLUDED.tag, severity = EXCLUDED.severity, group_ids = EXCLUDED.group_ids,
+                    escalate_after_min = EXCLUDED.escalate_after_min, escalate_channel_ids = EXCLUDED.escalate_channel_ids,
+                    escalate_group_ids = EXCLUDED.escalate_group_ids",
         )
         .bind(existing)
         .bind(name)
@@ -452,6 +585,13 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
         .bind(r["repeat_min"].as_i64().map(|v| v as i32))
         .bind(check)
         .bind(s(&r["pattern"]))
+        .bind(site)
+        .bind(s(&r["tag"]))
+        .bind(s(&r["severity"]).filter(|v| ["info", "warning", "critical"].contains(&v.as_str())))
+        .bind(map_ids(&group_ids, &r["group_ids"]))
+        .bind(r["escalate_after_min"].as_i64().map(|v| v as i32))
+        .bind(map_ids(&chan_ids, &r["escalate_channel_ids"]))
+        .bind(map_ids(&group_ids, &r["escalate_group_ids"]))
         .execute(&mut *tx)
         .await?;
         report.alert_rules += 1;
@@ -463,16 +603,17 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
         let mut row = m.clone();
         row["device_ids"] = json!(map_ids(&dev_ids, &m["device_ids"]));
         row["check_ids"] = json!(map_ids(&check_ids, &m["check_ids"]));
+        row["site_ids"] = json!(map_ids(&site_ids, &m["site_ids"]));
         let existing = find(&mut tx, "SELECT id FROM maintenance_windows WHERE name = $1 ORDER BY id LIMIT 1", &[name]).await?;
         if let Some(id) = existing {
             sqlx::query("DELETE FROM maintenance_windows WHERE id = $1").bind(id).execute(&mut *tx).await?;
         }
         sqlx::query(
-            "INSERT INTO maintenance_windows (name, kind, starts_at, ends_at, days, time_from, time_to, device_ids, check_ids, enabled)
+            "INSERT INTO maintenance_windows (name, kind, starts_at, ends_at, days, time_from, time_to, device_ids, check_ids, site_ids, enabled)
              SELECT r.name, r.kind, r.starts_at, r.ends_at, r.days, r.time_from, r.time_to, COALESCE(r.device_ids, '{}'),
-                    COALESCE(r.check_ids, '{}'), COALESCE(r.enabled, true)
+                    COALESCE(r.check_ids, '{}'), COALESCE(r.site_ids, '{}'), COALESCE(r.enabled, true)
                FROM jsonb_to_record($1) AS r(name text, kind text, starts_at timestamptz, ends_at timestamptz, days int[],
-                    time_from text, time_to text, device_ids bigint[], check_ids bigint[], enabled bool)",
+                    time_from text, time_to text, device_ids bigint[], check_ids bigint[], site_ids bigint[], enabled bool)",
         )
         .bind(&row)
         .execute(&mut *tx)
@@ -483,9 +624,7 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
     // Benutzer (Name)
     let mut user_ids = Ids::new();
     for u in list(p, "users") {
-        let (Some(old), Some(name), Some(hash), Some(role)) =
-            (u["id"].as_i64(), u["username"].as_str(), u["password_hash"].as_str(), u["role"].as_str())
-        else {
+        let (Some(old), Some(name), Some(hash)) = (u["id"].as_i64(), u["username"].as_str(), u["password_hash"].as_str()) else {
             continue;
         };
         let totp: Option<String> = match u["totp_secret"].as_str() {
@@ -494,20 +633,86 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
         };
         let totp_enabled = u["totp_enabled"].as_bool().unwrap_or(false) && totp.is_some();
         let id: i64 = sqlx::query_scalar(
-            "INSERT INTO users (username, password_hash, role, totp_secret, totp_enabled) VALUES ($1, $2, $3, $4, $5)
-             ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, role = EXCLUDED.role,
-                    totp_secret = EXCLUDED.totp_secret, totp_enabled = EXCLUDED.totp_enabled, totp_last_step = NULL
+            "INSERT INTO users (username, password_hash, totp_secret, totp_enabled, display_name, email, disabled, auth_source, oidc_subject)
+             VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7, false), COALESCE($8, 'local'), $9)
+             ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash,
+                    totp_secret = EXCLUDED.totp_secret, totp_enabled = EXCLUDED.totp_enabled, totp_last_step = NULL,
+                    display_name = EXCLUDED.display_name, email = EXCLUDED.email, disabled = EXCLUDED.disabled,
+                    auth_source = EXCLUDED.auth_source, oidc_subject = EXCLUDED.oidc_subject
              RETURNING id",
         )
         .bind(name)
         .bind(hash)
-        .bind(role)
         .bind(totp)
         .bind(totp_enabled)
+        .bind(s(&u["display_name"]))
+        .bind(s(&u["email"]))
+        .bind(u["disabled"].as_bool())
+        .bind(s(&u["auth_source"]).filter(|a| a == "local" || a == "oidc"))
+        .bind(s(&u["oidc_subject"]))
         .fetch_one(&mut *tx)
         .await?;
         user_ids.insert(old, id);
         report.users += 1;
+        // Sicherung im alten Format: Rolle „admin“/„viewer“ als Rollen-Zuweisung für alle Sektoren
+        if let Some(role) = u["role"].as_str() {
+            let role_name = if role == "admin" { "Administrator" } else { "Nur lesen" };
+            sqlx::query("DELETE FROM role_assignments WHERE user_id = $1").bind(id).execute(&mut *tx).await?;
+            sqlx::query("INSERT INTO role_assignments (role_id, user_id) SELECT id, $1 FROM roles WHERE name = $2")
+                .bind(id)
+                .bind(role_name)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+
+    // Gruppen-Mitgliedschaften und Rollen-Zuweisungen der eingespielten Benutzer/Gruppen ersetzen
+    if p["role_assignments"].is_array() {
+        let users: Vec<i64> = user_ids.values().copied().collect();
+        let groups: Vec<i64> = group_ids.values().copied().collect();
+        sqlx::query("DELETE FROM role_assignments WHERE user_id = ANY($1) OR group_id = ANY($2)")
+            .bind(&users)
+            .bind(&groups)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM group_members WHERE group_id = ANY($1)").bind(&groups).execute(&mut *tx).await?;
+    }
+    for m in list(p, "group_members") {
+        if let (Some(g), Some(u)) = (map_id(&group_ids, &m["group_id"]), map_id(&user_ids, &m["user_id"])) {
+            sqlx::query("INSERT INTO group_members (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+                .bind(g)
+                .bind(u)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+    for a in list(p, "role_assignments") {
+        let Some(role) = map_id(&role_ids, &a["role_id"]) else { continue };
+        let user = map_id(&user_ids, &a["user_id"]);
+        let group = map_id(&group_ids, &a["group_id"]);
+        let site = map_id(&site_ids, &a["site_id"]);
+        if user.is_none() == group.is_none() || (!a["site_id"].is_null() && site.is_none()) {
+            continue;
+        }
+        sqlx::query("INSERT INTO role_assignments (role_id, user_id, group_id, site_id) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING")
+            .bind(role)
+            .bind(user)
+            .bind(group)
+            .bind(site)
+            .execute(&mut *tx)
+            .await?;
+    }
+    // Nach dem Einspielen muss es weiterhin einen Administrator geben
+    let (admins,): (i64,) = sqlx::query_as(
+        "SELECT count(DISTINCT u.id) FROM users u
+           JOIN role_assignments a ON a.site_id IS NULL AND (a.user_id = u.id OR a.group_id IN (SELECT group_id FROM group_members WHERE user_id = u.id))
+           JOIN roles r ON r.id = a.role_id AND r.all_permissions
+          WHERE NOT u.disabled",
+    )
+    .fetch_one(&mut *tx)
+    .await?;
+    if admins == 0 {
+        anyhow::bail!("Die Sicherung enthält keinen aktiven Administrator – Einspielen abgebrochen");
     }
 
     // Dashboards: Geräte-Verweise in den Kacheln umschreiben
@@ -529,6 +734,38 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
         .await?;
     }
 
+    // Benannte und geteilte Dashboards (Name + Besitzer)
+    for v in list(p, "dashboard_views") {
+        let Some(name) = v["name"].as_str() else { continue };
+        let owner = map_id(&user_ids, &v["owner_id"]);
+        if !v["owner_id"].is_null() && owner.is_none() {
+            continue;
+        }
+        let mut layout = v["layout"].clone();
+        if let Some(widgets) = layout.as_array_mut() {
+            for w in widgets {
+                remap_widget(w, &dev_ids);
+            }
+        }
+        sqlx::query("DELETE FROM dashboard_views WHERE name = $1 AND owner_id IS NOT DISTINCT FROM $2")
+            .bind(name)
+            .bind(owner)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query(
+            "INSERT INTO dashboard_views (name, owner_id, layout, site_id, shared, group_ids, is_default) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+        )
+        .bind(name)
+        .bind(owner)
+        .bind(&layout)
+        .bind(map_id(&site_ids, &v["site_id"]))
+        .bind(v["shared"].as_bool().unwrap_or(false))
+        .bind(map_ids(&group_ids, &v["group_ids"]))
+        .bind(v["is_default"].as_bool().unwrap_or(false))
+        .execute(&mut *tx)
+        .await?;
+    }
+
     // Einstellungen
     for st in list(p, "settings") {
         let Some(key) = st["key"].as_str().filter(|k| SETTINGS.contains(k)) else { continue };
@@ -537,6 +774,15 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
             "smtp" => {
                 let plain: Map<String, Value> = value["plain"].as_object().cloned().unwrap_or_default();
                 value = json!({ "sealed": vault.seal(&plain)? });
+            }
+            "oidc" => {
+                if let Some(map) = value.as_object_mut() {
+                    let sealed = match map.remove("client_secret_plain") {
+                        Some(Value::String(secret)) => json!(vault.seal(&secret)?),
+                        _ => Value::Null,
+                    };
+                    map.insert("client_secret_sealed".into(), sealed);
+                }
             }
             "status_page" => {
                 if let Some(items) = value["items"].as_array_mut() {

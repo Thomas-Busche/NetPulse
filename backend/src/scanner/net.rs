@@ -2,14 +2,14 @@
 
 use std::{
     collections::HashMap,
-    net::{IpAddr, Ipv4Addr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     sync::atomic::{AtomicU16, Ordering},
     time::{Duration, Instant},
 };
 
 use anyhow::{bail, Context, Result};
 use futures::future::join_all;
-use surge_ping::{Client, Config, PingIdentifier, PingSequence};
+use surge_ping::{Client, Config, PingIdentifier, PingSequence, ICMP};
 use tokio::net::TcpStream;
 
 /// Ports, die bei der Erkennung geprüft werden. Sie verraten viel über den Gerätetyp
@@ -45,6 +45,23 @@ pub fn parse_cidr(input: &str) -> Result<(Ipv4Addr, u8)> {
     Ok((Ipv4Addr::from(u32::from(addr) & mask), prefix))
 }
 
+/// IPv6-Netz („2001:db8:1::/64“) → Netzadresse und Präfix. Größere Netze als /32 sind nicht sinnvoll.
+pub fn parse_cidr6(input: &str) -> Result<(Ipv6Addr, u8)> {
+    let (addr, prefix) = input.trim().split_once('/').context("Netz bitte im Format 2001:db8::/64 angeben")?;
+    let addr: Ipv6Addr = addr.parse().context("Ungültige IPv6-Adresse")?;
+    let prefix: u8 = prefix.parse().context("Ungültiges Präfix")?;
+    if !(32..=128).contains(&prefix) {
+        bail!("IPv6-Präfix muss zwischen /32 und /128 liegen");
+    }
+    let mask = if prefix == 0 { 0 } else { u128::MAX << (128 - u32::from(prefix)) };
+    Ok((Ipv6Addr::from(u128::from(addr) & mask), prefix))
+}
+
+pub fn in_prefix6(ip: Ipv6Addr, net: Ipv6Addr, prefix: u8) -> bool {
+    let mask = if prefix == 0 { 0 } else { u128::MAX << (128 - u32::from(prefix)) };
+    u128::from(ip) & mask == u128::from(net) & mask
+}
+
 /// Alle nutzbaren Host-Adressen eines Netzes (ohne Netz- und Broadcast-Adresse).
 pub fn hosts(network: Ipv4Addr, prefix: u8) -> Vec<Ipv4Addr> {
     let start = u32::from(network);
@@ -60,6 +77,8 @@ pub fn hosts(network: Ipv4Addr, prefix: u8) -> Vec<Ipv4Addr> {
 pub struct Pinger {
     /// `None`, wenn ICMP nicht erlaubt ist (fehlende Capability NET_RAW)
     client: Option<Client>,
+    /// ICMPv6 (`None`, wenn der Host kein IPv6 hat)
+    client6: Option<Client>,
     next_id: AtomicU16,
 }
 
@@ -75,14 +94,20 @@ impl Pinger {
                 None
             }
         };
-        Self { client, next_id: AtomicU16::new(1) }
+        let client6 = Client::new(&Config::builder().kind(ICMP::V6).build()).ok();
+        Self { client, client6, next_id: AtomicU16::new(1) }
     }
 
     /// Sendet bis zu `tries` Pings. Liefert die Antwortzeit oder `None`.
     pub async fn ping(&self, ip: Ipv4Addr, timeout: Duration, tries: u16) -> Option<Duration> {
-        let client = self.client.as_ref()?;
+        self.ping_ip(IpAddr::V4(ip), timeout, tries).await
+    }
+
+    /// Wie `ping`, auch für IPv6
+    pub async fn ping_ip(&self, ip: IpAddr, timeout: Duration, tries: u16) -> Option<Duration> {
+        let client = if ip.is_ipv6() { self.client6.as_ref()? } else { self.client.as_ref()? };
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        let mut pinger = client.pinger(IpAddr::V4(ip), PingIdentifier(id)).await;
+        let mut pinger = client.pinger(ip, PingIdentifier(id)).await;
         pinger.timeout(timeout);
         for seq in 0..tries {
             if let Ok((_, rtt)) = pinger.ping(PingSequence(seq), &[0u8; 32]).await {
@@ -106,7 +131,8 @@ pub enum TcpResult {
     NoAnswer,
 }
 
-pub async fn tcp_probe(ip: Ipv4Addr, port: u16, timeout: Duration) -> TcpResult {
+pub async fn tcp_probe(ip: impl Into<IpAddr>, port: u16, timeout: Duration) -> TcpResult {
+    let ip: IpAddr = ip.into();
     let started = Instant::now();
     match tokio::time::timeout(timeout, TcpStream::connect(SocketAddr::from((ip, port)))).await {
         Ok(Ok(_)) => TcpResult::Open(started.elapsed()),
@@ -118,7 +144,8 @@ pub async fn tcp_probe(ip: Ipv4Addr, port: u16, timeout: Duration) -> TcpResult 
 }
 
 /// Prüft mehrere Ports gleichzeitig; liefert die schnellste Antwortzeit, falls das Gerät reagiert.
-pub async fn tcp_alive(ip: Ipv4Addr, ports: &[u16], timeout: Duration) -> Option<Duration> {
+pub async fn tcp_alive(ip: impl Into<IpAddr>, ports: &[u16], timeout: Duration) -> Option<Duration> {
+    let ip: IpAddr = ip.into();
     let probes = ports.iter().map(|&port| tcp_probe(ip, port, timeout));
     join_all(probes)
         .await
@@ -163,6 +190,121 @@ pub fn read_arp_table() -> HashMap<Ipv4Addr, String> {
         .collect()
 }
 
+/// IPv6-Nachbartabelle (NDP) des Kernels über Netlink: globale Adressen → MAC.
+/// Funktioniert wie die ARP-Tabelle nur mit `network_mode: host`; ohne IPv6 ist sie leer.
+pub fn read_ndp_table() -> HashMap<Ipv6Addr, String> {
+    netlink::neighbors(libc::AF_INET6 as u8)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|(addr, mac)| {
+            let ip = Ipv6Addr::from(<[u8; 16]>::try_from(addr.as_slice()).ok()?);
+            let link_local = (ip.segments()[0] & 0xffc0) == 0xfe80;
+            (!link_local && !ip.is_multicast() && !ip.is_loopback() && mac.len() == 6)
+                .then(|| (ip, mac.iter().map(|b| format!("{b:02x}")).collect::<Vec<_>>().join(":")))
+        })
+        .filter(|(_, mac)| mac != "00:00:00:00:00:00")
+        .collect()
+}
+
+/// Minimaler Netlink-Client: RTM_GETNEIGH-Dump (Adresse, Link-Layer-Adresse) für erreichbare/veraltete Nachbarn
+mod netlink {
+    use std::io;
+
+    const NLMSG_HDR: usize = 16;
+    const NDMSG: usize = 12;
+    const RTM_NEWNEIGH: u16 = 28;
+    const RTM_GETNEIGH: u16 = 30;
+    const NLM_F_REQUEST: u16 = 1;
+    const NLM_F_DUMP: u16 = 0x300;
+    const NLMSG_DONE: u16 = 3;
+    const NLMSG_ERROR: u16 = 2;
+    const NDA_DST: u16 = 1;
+    const NDA_LLADDR: u16 = 2;
+    /// NUD_INCOMPLETE | NUD_FAILED | NUD_NOARP
+    const NUD_SKIP: u16 = 0x01 | 0x20 | 0x40;
+
+    fn align(n: usize) -> usize {
+        (n + 3) & !3
+    }
+
+    pub fn neighbors(family: u8) -> io::Result<Vec<(Vec<u8>, Vec<u8>)>> {
+        // SAFETY: einfache Socket-Aufrufe mit korrekt bemessenen Puffern; der Deskriptor wird immer geschlossen
+        unsafe {
+            let fd = libc::socket(libc::AF_NETLINK, libc::SOCK_RAW | libc::SOCK_CLOEXEC, libc::NETLINK_ROUTE);
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let result = (|| {
+                let mut req = [0u8; NLMSG_HDR + NDMSG];
+                req[0..4].copy_from_slice(&((NLMSG_HDR + NDMSG) as u32).to_ne_bytes());
+                req[4..6].copy_from_slice(&RTM_GETNEIGH.to_ne_bytes());
+                req[6..8].copy_from_slice(&(NLM_F_REQUEST | NLM_F_DUMP).to_ne_bytes());
+                req[8..12].copy_from_slice(&1u32.to_ne_bytes());
+                req[NLMSG_HDR] = family;
+                if libc::send(fd, req.as_ptr().cast(), req.len(), 0) < 0 {
+                    return Err(io::Error::last_os_error());
+                }
+                let mut out = Vec::new();
+                let mut buf = vec![0u8; 64 * 1024];
+                loop {
+                    let n = libc::recv(fd, buf.as_mut_ptr().cast(), buf.len(), 0);
+                    if n <= 0 {
+                        return if n == 0 { Ok(out) } else { Err(io::Error::last_os_error()) };
+                    }
+                    if parse(&buf[..n as usize], &mut out) {
+                        return Ok(out);
+                    }
+                }
+            })();
+            libc::close(fd);
+            result
+        }
+    }
+
+    /// Wertet eine Antwort aus; `true` = Ende des Dumps
+    fn parse(data: &[u8], out: &mut Vec<(Vec<u8>, Vec<u8>)>) -> bool {
+        let mut off = 0;
+        while off + NLMSG_HDR <= data.len() {
+            let len = u32::from_ne_bytes(data[off..off + 4].try_into().unwrap_or_default()) as usize;
+            let kind = u16::from_ne_bytes(data[off + 4..off + 6].try_into().unwrap_or_default());
+            if len < NLMSG_HDR || off + len > data.len() {
+                return true;
+            }
+            match kind {
+                NLMSG_DONE | NLMSG_ERROR => return true,
+                RTM_NEWNEIGH if len >= NLMSG_HDR + NDMSG => {
+                    let msg = &data[off + NLMSG_HDR..off + len];
+                    let state = u16::from_ne_bytes([msg[8], msg[9]]);
+                    let (mut dst, mut ll) = (None, None);
+                    let mut a = NDMSG;
+                    while a + 4 <= msg.len() {
+                        let alen = u16::from_ne_bytes([msg[a], msg[a + 1]]) as usize;
+                        let akind = u16::from_ne_bytes([msg[a + 2], msg[a + 3]]);
+                        if alen < 4 || a + alen > msg.len() {
+                            break;
+                        }
+                        let value = msg[a + 4..a + alen].to_vec();
+                        match akind {
+                            NDA_DST => dst = Some(value),
+                            NDA_LLADDR => ll = Some(value),
+                            _ => {}
+                        }
+                        a += align(alen);
+                    }
+                    if let (Some(d), Some(l)) = (dst, ll) {
+                        if state & NUD_SKIP == 0 {
+                            out.push((d, l));
+                        }
+                    }
+                }
+                _ => {}
+            }
+            off += align(len);
+        }
+        false
+    }
+}
+
 /// Rückwärtsauflösung IP → Name (z. B. „nas.fritz.box“), höchstens 3 Sekunden.
 pub async fn reverse_dns(ip: Ipv4Addr) -> Option<String> {
     let lookup = tokio::task::spawn_blocking(move || dns_lookup::lookup_addr(&IpAddr::V4(ip)).ok());
@@ -189,6 +331,22 @@ mod tests {
         assert_eq!(parse_cidr("10.10.0.0/16").unwrap().1, 16);
         assert!(parse_cidr("10.0.0.0/33").is_err());
         assert!(parse_cidr("kein-netz").is_err());
+    }
+
+    #[test]
+    fn ipv6_netze() {
+        let (net, prefix) = parse_cidr6("2001:db8:1:2::17/64").unwrap();
+        assert_eq!(net, "2001:db8:1:2::".parse::<Ipv6Addr>().unwrap());
+        assert_eq!(prefix, 64);
+        assert!(in_prefix6("2001:db8:1:2::abcd".parse().unwrap(), net, prefix));
+        assert!(!in_prefix6("2001:db8:1:3::1".parse().unwrap(), net, prefix));
+        assert!(parse_cidr6("2001:db8::/16").is_err());
+    }
+
+    #[test]
+    fn ndp_tabelle_lesbar() {
+        // Darf nie abstürzen – auch ohne IPv6 oder Netlink-Rechte
+        let _ = read_ndp_table();
     }
 
     #[test]

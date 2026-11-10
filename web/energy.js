@@ -194,7 +194,7 @@ async function viewEnergy(_arg, params) {
 
 function renderEnergySettings(r) {
   const s = r.settings;
-  const dis = isAdmin() ? '' : ' disabled';
+  const dis = can('settings.manage') ? '' : ' disabled';
   $('#en-settings').innerHTML = `<form class="form" id="en-form">
       <label>Hauptzähler (Hausanschluss)<select name="main_id"${dis}><option value="">– keiner –</option>
         ${r.meters.map((m) => `<option value="${m.id}"${m.id === s.main_id ? ' selected' : ''}>${esc(m.label)}</option>`).join('')}</select></label>
@@ -203,9 +203,9 @@ function renderEnergySettings(r) {
         <label class="inline"><input type="radio" name="mode" value="gross"${s.main_mode === 'gross' ? ' checked' : ''}${dis}> Gesamtverbrauch des Hauses</label></div></fieldset>
       <div class="form-row"><label>Strompreis (ct/kWh)<input name="price" type="number" step="0.01" min="0" max="500" value="${esc(s.price_ct ?? '')}" placeholder="z. B. 32,5"${dis}></label>
         <label>Einspeisung (ct/kWh)<input name="feed" type="number" step="0.01" min="0" max="500" value="${esc(s.feed_in_ct ?? '')}" placeholder="z. B. 8,1"${dis}></label></div>
-      ${isAdmin() ? `<button type="submit">${icon('check')}Speichern</button>` : '<p class="hint">Nur Administratoren können das ändern.</p>'}
+      ${can('settings.manage') ? `<button type="submit">${icon('check')}Speichern</button>` : '<p class="hint">Ändern braucht das Recht „Einstellungen verwalten“.</p>'}
       <p class="hint">Rollen der Geräte (Verbrauch/Erzeugung/Netz) stellst du beim Gerät unter „Einstellungen“ ein.</p></form>`;
-  if (!isAdmin()) return;
+  if (!can('settings.manage')) return;
   $('#en-form').addEventListener('submit', (ev) => {
     ev.preventDefault();
     const e = ev.target.elements;

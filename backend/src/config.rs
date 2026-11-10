@@ -37,6 +37,10 @@ pub struct Config {
     pub syslog_retention_days: i32,
     /// Zwei-Faktor-Anmeldung für alle Benutzer erzwingen (fest, in der Oberfläche nicht abschaltbar)
     pub require_totp: bool,
+    /// Größe des Datenbank-Verbindungspools
+    pub db_max_connections: u32,
+    /// So viele fehlgeschlagene Prüfungen in Folge, bevor ein Gerät als „down“ gilt (dämpft Flattern)
+    pub monitor_fail_threshold: i32,
 }
 
 impl Config {
@@ -70,6 +74,8 @@ impl Config {
                 .unwrap_or_default(),
             syslog_retention_days: number("RETENTION_SYSLOG_DAYS", 30)?,
             require_totp: matches!(optional("REQUIRE_TOTP").as_deref(), Some("true" | "1" | "yes")),
+            db_max_connections: number::<u32>("DB_MAX_CONNECTIONS", 20)?.clamp(5, 500),
+            monitor_fail_threshold: number::<i32>("MONITOR_FAIL_THRESHOLD", 2)?.clamp(1, 20),
         })
     }
 }

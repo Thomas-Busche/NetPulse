@@ -9,9 +9,13 @@ mod dashboard;
 mod devices;
 mod energy;
 mod integrations;
+mod oidc;
+mod probes;
 mod public;
 mod session;
+mod sites;
 mod stream;
+mod users;
 
 use axum::{
     extract::State,
@@ -28,6 +32,8 @@ pub fn router(state: AppState) -> Router {
     let api = Router::new()
         // Anmeldung
         .route("/login", post(session::login))
+        .route("/oidc/info", get(oidc::info))
+        .route("/settings/oidc", get(oidc::get_settings).put(oidc::put_settings))
         .route("/logout", post(session::logout))
         .route("/me", get(session::me))
         .route("/me/password", post(session::change_password))
@@ -38,6 +44,9 @@ pub fn router(state: AppState) -> Router {
         .route("/me/totp/setup", post(session::totp_setup))
         .route("/me/totp/enable", post(session::totp_enable))
         .route("/me/totp/disable", post(session::totp_disable))
+        .route("/me/reauth", post(session::reauth))
+        .route("/me/tokens", get(users::list_tokens).post(users::create_token))
+        .route("/me/tokens/{id}", delete(users::delete_token))
         .route("/push/key", get(session::push_key))
         .route("/push/subscribe", post(session::push_subscribe))
         .route("/push/unsubscribe", post(session::push_unsubscribe))
@@ -47,6 +56,7 @@ pub fn router(state: AppState) -> Router {
         // Geräte & Status
         .route("/summary", get(devices::summary))
         .route("/devices", get(devices::list).post(devices::create))
+        .route("/devices/tags", get(devices::tags))
         .route("/devices/{id}", get(devices::detail).patch(devices::update).delete(devices::remove))
         .route("/devices/{id}/credentials", put(devices::set_credentials))
         .route("/devices/{id}/poll", post(devices::poll_now))
@@ -72,13 +82,25 @@ pub fn router(state: AppState) -> Router {
         .route("/checks/{id}/run", post(checks::run_now))
         .route("/checks/{id}/history", get(checks::history))
         .route("/alerts", get(alerts::list_alerts))
+        .route("/alerts/{id}/ack", post(alerts::acknowledge))
+        // Sektoren & Leitstand
+        .route("/sites", get(sites::list).post(sites::create))
+        .route("/sites/status", get(sites::status))
+        .route("/sites/{id}", axum::routing::patch(sites::update).delete(sites::remove))
+        .route("/sites/{id}/devices", post(sites::move_devices))
+        .route("/problems", get(sites::problems))
         // Dashboard (pro Benutzer)
         .route("/dashboard", get(dashboard::load).put(dashboard::save))
         .route("/pulse", get(dashboard::pulse))
+        .route("/dashboards", get(dashboard::list_views).post(dashboard::create_view))
+        .route("/dashboards/{id}", put(dashboard::update_view).delete(dashboard::delete_view))
         // Netze & Scans
         .route("/networks", get(admin::list_networks).post(admin::add_network))
-        .route("/networks/{id}", delete(admin::delete_network))
+        .route("/networks/{id}", axum::routing::patch(admin::update_network).delete(admin::delete_network))
         .route("/networks/{id}/scan", post(admin::scan_network))
+        .route("/probes", get(probes::list).post(probes::create))
+        .route("/probes/{id}", axum::routing::patch(probes::update).delete(probes::remove))
+        .route("/probes/{id}/token", post(probes::new_key))
         .route("/scan", post(admin::trigger_scan))
         .route("/scan/status", get(admin::scan_status))
         .route("/settings/discovery", get(admin::get_discovery).put(admin::set_discovery))
@@ -100,11 +122,16 @@ pub fn router(state: AppState) -> Router {
         .route("/alert-rules", get(alerts::list_rules).post(alerts::create_rule))
         .route("/alert-rules/{id}", axum::routing::patch(alerts::update_rule).delete(alerts::delete_rule))
         // Verwaltung
-        .route("/users", get(admin::list_users).post(admin::add_user))
-        .route("/users/{id}", delete(admin::delete_user))
-        .route("/users/{id}/totp", delete(admin::reset_totp))
-        .route("/users/{id}/password", axum::routing::put(admin::reset_user_password))
-        .route("/users/{id}/sessions", delete(admin::end_user_sessions))
+        .route("/users", get(users::list_users).post(users::add_user))
+        .route("/users/{id}", axum::routing::patch(users::update_user).delete(users::delete_user))
+        .route("/users/{id}/totp", delete(users::reset_totp))
+        .route("/users/{id}/password", axum::routing::put(users::reset_user_password))
+        .route("/users/{id}/sessions", delete(users::end_user_sessions))
+        .route("/permissions", get(users::permissions))
+        .route("/roles", get(users::list_roles).post(users::create_role))
+        .route("/roles/{id}", axum::routing::patch(users::update_role).delete(users::delete_role))
+        .route("/groups", get(users::list_groups).post(users::create_group))
+        .route("/groups/{id}", axum::routing::patch(users::update_group).delete(users::delete_group))
         .route("/audit", get(admin::audit_log))
         .route("/logs", get(admin::system_log))
         .route("/system", get(admin::system))
@@ -116,6 +143,8 @@ pub fn router(state: AppState) -> Router {
         .route("/backup/auto", get(backup::get_auto).put(backup::set_auto))
         .route("/backup/auto/run", post(backup::run_auto))
         .route("/backup/files/{name}", get(backup::get_file).delete(backup::delete_file))
+        .route("/vault", get(backup::vault_info))
+        .route("/vault/rotate", post(backup::rotate_key))
         .route("/maintenance", get(admin::list_maintenance).post(admin::create_maintenance))
         .route("/maintenance/{id}", axum::routing::patch(admin::update_maintenance).delete(admin::delete_maintenance))
         // Verbundene Programme (Verwaltung)
@@ -126,13 +155,22 @@ pub fn router(state: AppState) -> Router {
         .route("/pauses", get(integrations::active_pauses))
         .route("/pauses/{id}/end", post(integrations::stop_pause))
         .layer(middleware::from_fn(auth::csrf_guard))
+        // Leitstand-Bildschirm: meldet sich mit einem API-Schlüssel an und bekommt eine Kiosk-Sitzung
+        .route("/kiosk/login", post(users::kiosk_login))
+        // Zentrale Anmeldung: Weiterleitungen des Browsers (GET, ohne CSRF-Header)
+        .route("/oidc/start", get(oidc::start))
+        .route("/oidc/callback", get(oidc::callback))
         // Schnittstelle für verbundene Programme: Anmeldung per Schlüssel im Authorization-Header
         // (kein Cookie – deshalb ohne CSRF-Header; fremde Webseiten kennen den Schlüssel nicht)
         .route("/integration/v1/hello", get(integrations::hello))
         .route("/integration/v1/inventory", put(integrations::put_inventory))
         .route("/integration/v1/pause", post(integrations::pause))
         .route("/integration/v1/pause/{id}/end", post(integrations::end_pause))
-        .route("/integration/v1/report", post(integrations::report));
+        .route("/integration/v1/report", post(integrations::report))
+        // Probes in entfernten Sektoren: Anmeldung per eigenem Schlüssel (npp_…), ebenfalls ohne Cookie
+        .route("/probe/v1/config", get(probes::config))
+        .route("/probe/v1/results", post(probes::results))
+        .route("/probe/v1/discovery", post(probes::discovery));
 
     Router::new()
         .nest("/api", api)

@@ -28,8 +28,10 @@ mod maintenance;
 mod mib;
 mod oui;
 mod perf;
+mod probe;
 mod push;
 mod scanner;
+mod sites;
 mod syslog;
 mod totp;
 mod vault;
@@ -80,8 +82,13 @@ async fn main() -> Result<()> {
         .with(logbuf::BufferLayer)
         .init();
 
+    // Probe-Betrieb: „netpulse probe“ – ohne Datenbank, meldet an einen NetPulse-Server
+    if std::env::args().nth(1).as_deref() == Some("probe") {
+        return probe::run().await;
+    }
+
     let config = Arc::new(Config::from_env()?);
-    let db = connect_db(&config.database_url).await?;
+    let db = connect_db(&config.database_url, config.db_max_connections).await?;
     sqlx::migrate!("./migrations")
         .run(&db)
         .await
@@ -106,7 +113,7 @@ async fn main() -> Result<()> {
     let (scan_tx, scan_rx) = mpsc::unbounded_channel();
     let (poll_tx, poll_rx) = mpsc::unbounded_channel();
     let state = AppState {
-        db,
+        db: db.clone(),
         config: config.clone(),
         scan_tx,
         scan_progress: Arc::new(scanner::ScanProgress::default()),
@@ -114,7 +121,7 @@ async fn main() -> Result<()> {
         vault: Arc::new(vault),
         live: Arc::new(collect::live::LiveCache::default()),
         cred_jobs: Arc::new(collect::check::Jobs::default()),
-        login_limiter: Arc::new(auth::LoginLimiter::default()),
+        login_limiter: Arc::new(auth::LoginLimiter::new(db.clone())),
         hub: Arc::new(collect::fast::Hub::default()),
         vapid: Arc::new(vapid),
     };
@@ -154,11 +161,11 @@ async fn main() -> Result<()> {
 
 /// Verbindet sich mit PostgreSQL. Beim Start des Containers ist die DB evtl. noch nicht bereit,
 /// deshalb wird es eine Minute lang wiederholt.
-async fn connect_db(url: &str) -> Result<PgPool> {
+async fn connect_db(url: &str, max_connections: u32) -> Result<PgPool> {
     let mut attempt = 0;
     loop {
         let result = PgPoolOptions::new()
-            .max_connections(10)
+            .max_connections(max_connections)
             .acquire_timeout(Duration::from_secs(10))
             .connect(url)
             .await;
@@ -220,7 +227,15 @@ async fn apply_retention(db: &PgPool, config: &Config) -> Result<()> {
 /// Zwei-Faktor-Anmeldung zurücksetzen. Aufruf: `docker exec -it netpulse-app netpulse reset-password admin`
 async fn reset_password_cli(db: &PgPool, args: &[String]) -> Result<()> {
     let Some(username) = args.iter().find(|a| !a.starts_with("--")) else {
-        let names: Vec<(String, String)> = sqlx::query_as("SELECT username, role FROM users ORDER BY username").fetch_all(db).await?;
+        let names: Vec<(String, String)> = sqlx::query_as(
+            "SELECT u.username, coalesce(string_agg(DISTINCT r.name, ', '), 'ohne Rolle')
+               FROM users u
+               LEFT JOIN role_assignments a ON a.user_id = u.id
+               LEFT JOIN roles r ON r.id = a.role_id
+              GROUP BY u.username ORDER BY u.username",
+        )
+        .fetch_all(db)
+        .await?;
         eprintln!("Aufruf: netpulse reset-password <benutzer> [--2fa]");
         eprintln!("Vorhandene Benutzer:");
         for (name, role) in names {
@@ -271,11 +286,18 @@ async fn bootstrap(db: &PgPool, config: &Config) -> Result<()> {
         auth::validate_password(&password)
             .map_err(|e| anyhow::anyhow!("INITIAL_ADMIN_PASSWORD: {e}"))?;
         let hash = auth::hash_password(password.clone()).await?;
-        sqlx::query("INSERT INTO users (username, password_hash, role) VALUES ($1, $2, 'admin')")
+        let (user_id,): (i64,) = sqlx::query_as("INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id")
             .bind(&username)
             .bind(hash)
-            .execute(db)
+            .fetch_one(db)
             .await?;
+        sqlx::query(
+            "INSERT INTO role_assignments (role_id, user_id, site_id)
+             SELECT id, $1, NULL FROM roles WHERE all_permissions ORDER BY id LIMIT 1",
+        )
+        .bind(user_id)
+        .execute(db)
+        .await?;
         if generated {
             // Bewusst nur auf die Konsole (Container-Log), nicht ins System-Log der Oberfläche
             eprintln!("Erster Admin angelegt – Benutzer: '{username}', Passwort: '{password}'. Bitte sofort ändern!");
@@ -327,6 +349,10 @@ async fn maintenance(state: AppState) {
                 .await?;
             sqlx::query("DELETE FROM audit_log WHERE time < now() - make_interval(days => $1)")
                 .bind(config.audit_retention_days)
+                .execute(&state.db)
+                .await?;
+            auth::LoginLimiter::cleanup(&state.db).await;
+            sqlx::query("DELETE FROM oidc_states WHERE created_at < now() - interval '1 hour'")
                 .execute(&state.db)
                 .await?;
             Ok::<_, sqlx::Error>(())

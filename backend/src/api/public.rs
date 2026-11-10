@@ -14,7 +14,7 @@ use serde_json::{json, Value};
 
 use crate::{
     audit,
-    auth::{self, AdminUser, CurrentUser},
+    auth::{self, perm, Need},
     error::{ApiError, ApiResult},
     AppState,
 };
@@ -65,7 +65,7 @@ async fn save(st: &AppState, page: &StatusPage) -> sqlx::Result<()> {
     Ok(())
 }
 
-pub async fn get_config(State(st): State<AppState>, _admin: AdminUser) -> Json<StatusPage> {
+pub async fn get_config(State(st): State<AppState>, _admin: Need<perm::SettingsManage>) -> Json<StatusPage> {
     Json(load(&st).await)
 }
 
@@ -81,7 +81,7 @@ pub struct StatusInput {
     new_token: bool,
 }
 
-pub async fn set_config(State(st): State<AppState>, AdminUser(user): AdminUser, Json(req): Json<StatusInput>) -> ApiResult<Json<StatusPage>> {
+pub async fn set_config(State(st): State<AppState>, Need(user, _): Need<perm::SettingsManage>, Json(req): Json<StatusInput>) -> ApiResult<Json<StatusPage>> {
     if req.items.len() > 100 || req.items.iter().any(|i| !matches!(i.kind.as_str(), "device" | "check")) {
         return Err(ApiError::BadRequest("Ungültige Einträge".into()));
     }
@@ -284,15 +284,24 @@ pub struct Node {
     parent_id: Option<i64>,
     parent_manual: bool,
     wan: bool,
+    site_id: i64,
 }
 
-pub async fn topology(State(st): State<AppState>, _user: CurrentUser) -> ApiResult<Json<Vec<Node>>> {
+#[derive(Deserialize)]
+pub struct TopologyQuery {
+    site: Option<i64>,
+}
+
+/// Netzwerkkarte – optional nur ein Sektor (inkl. Unter-Sektoren)
+pub async fn topology(State(st): State<AppState>, user: Need<perm::View>, axum::extract::Query(q): axum::extract::Query<TopologyQuery>) -> ApiResult<Json<Vec<Node>>> {
+    let sites = crate::sites::filter(&st.db, &user, "view", q.site).await?;
     let nodes = sqlx::query_as::<_, Node>(
         "SELECT id, COALESCE(name, reported_name, hostname, host(ip)) AS label, host(ip) AS ip,
                 COALESCE(device_type, 'unknown') AS device_type, status, monitored, parent_id, parent_manual,
-                wan_interface IS NOT NULL AS wan
-           FROM devices ORDER BY ip",
+                wan_interface IS NOT NULL AS wan, site_id
+           FROM devices WHERE ($1::bigint[] IS NULL OR site_id = ANY($1)) ORDER BY site_id, ip",
     )
+    .bind(&sites)
     .fetch_all(&st.db)
     .await?;
     Ok(Json(nodes))

@@ -11,7 +11,7 @@ use sqlx::FromRow;
 
 use crate::{
     audit,
-    auth::{AdminUser, CurrentUser},
+    auth::{perm, CurrentUser, Need},
     classify,
     error::{ApiError, ApiResult},
     AppState,
@@ -23,7 +23,12 @@ const DEVICE_COLUMNS: &str = "id, host(ip) AS ip, mac, hostname, name, notes, op
                               COALESCE(device_type, 'unknown') AS device_type, device_type_manual, os, model, \
                               inventory_at, inventory_error, wan_interface, wan_interface_manual, reported_name, integration, \
                               EXISTS (SELECT 1 FROM device_credentials dc WHERE dc.device_id = devices.id) AS has_credentials, \
-                              parent_id, parent_manual, energy_role,                               (SELECT p.reason || ': ' || array_to_string(p.subjects, ', ') FROM integration_pauses p                                 WHERE p.until > now() AND devices.id = ANY(p.device_ids) ORDER BY p.started_at LIMIT 1) AS paused";
+                              parent_id, parent_manual, energy_role, \
+                              (SELECT p.reason || ': ' || array_to_string(p.subjects, ', ') FROM integration_pauses p \
+                                WHERE p.until > now() AND devices.id = ANY(p.device_ids) ORDER BY p.started_at LIMIT 1) AS paused, \
+                              site_id, (SELECT s.name FROM sites s WHERE s.id = devices.site_id) AS site_name, tags, \
+                              (SELECT count(*) FROM events e WHERE e.device_id = devices.id AND e.kind IN ('up', 'down') \
+                                 AND e.time > now() - interval '1 hour') >= 4 AS flapping";
 
 const EVENT_SELECT: &str = "SELECT e.id, e.time, e.device_id, \
                             COALESCE(d.name, d.reported_name, d.hostname, host(d.ip)) AS device_label, e.kind, e.message \
@@ -62,6 +67,12 @@ pub struct Device {
     energy_role: Option<String>,
     /// Gerade pausiert (z. B. Backup läuft) – Grund
     paused: Option<String>,
+    site_id: i64,
+    site_name: Option<String>,
+    /// Gerätegruppen (frei wählbare Stichwörter, z. B. „kamera“, „kritisch“)
+    tags: Vec<String>,
+    /// Status wechselte in der letzten Stunde mindestens viermal
+    flapping: bool,
 }
 
 #[derive(Serialize, FromRow)]
@@ -74,6 +85,14 @@ pub struct Event {
     message: String,
 }
 
+#[derive(Deserialize, Default)]
+pub struct SiteQuery {
+    /// nur dieser Sektor (inkl. Unter-Sektoren)
+    site: Option<i64>,
+    /// nur Geräte mit diesem Tag
+    tag: Option<String>,
+}
+
 #[derive(Serialize, FromRow)]
 struct Summary {
     total: i64,
@@ -84,7 +103,9 @@ struct Summary {
     new_24h: i64,
 }
 
-pub async fn summary(State(st): State<AppState>, _user: CurrentUser) -> ApiResult<Json<Value>> {
+pub async fn summary(State(st): State<AppState>, user: CurrentUser, Query(q): Query<SiteQuery>) -> ApiResult<Json<Value>> {
+    // Ohne Recht „ansehen“ (z. B. noch keine Rolle) bleibt alles leer
+    let sites = if user.permissions.can_any("view") { crate::sites::filter(&st.db, &user, "view", q.site).await? } else { Some(vec![]) };
     let counts: Summary = sqlx::query_as(
         "SELECT count(*) AS total,
                 count(*) FILTER (WHERE monitored AND status = 'up')      AS up,
@@ -92,21 +113,28 @@ pub async fn summary(State(st): State<AppState>, _user: CurrentUser) -> ApiResul
                 count(*) FILTER (WHERE monitored AND status = 'unknown') AS unknown,
                 count(*) FILTER (WHERE NOT monitored)                    AS unmonitored,
                 count(*) FILTER (WHERE first_seen > now() - interval '24 hours') AS new_24h
-           FROM devices",
+           FROM devices WHERE ($1::bigint[] IS NULL OR site_id = ANY($1))",
     )
+    .bind(&sites)
     .fetch_one(&st.db)
     .await?;
     let last: Option<(Value,)> = sqlx::query_as("SELECT value FROM settings WHERE key = 'last_discovery'")
         .fetch_optional(&st.db)
         .await?;
-    let (open_alerts,): (i64,) = sqlx::query_as("SELECT count(*) FROM alerts WHERE resolved_at IS NULL")
-        .fetch_one(&st.db)
-        .await?;
+    let (open_alerts, unacked_alerts): (i64, i64) = sqlx::query_as(
+        "SELECT count(*), count(*) FILTER (WHERE a.acknowledged_at IS NULL)
+           FROM alerts a LEFT JOIN devices d ON d.id = a.device_id LEFT JOIN checks c ON c.id = a.check_id
+          WHERE a.resolved_at IS NULL AND ($1::bigint[] IS NULL OR COALESCE(d.site_id, c.site_id) = ANY($1))",
+    )
+    .bind(&sites)
+    .fetch_one(&st.db)
+    .await?;
     let wan_devices: Vec<(i64, String, String, String)> = sqlx::query_as(
         "SELECT id, COALESCE(name, reported_name, hostname, host(ip)), wan_interface, COALESCE(device_type, 'unknown')
-           FROM devices WHERE wan_interface IS NOT NULL
+           FROM devices WHERE wan_interface IS NOT NULL AND ($1::bigint[] IS NULL OR site_id = ANY($1))
           ORDER BY (device_type IN ('router', 'firewall')) DESC, id",
     )
+    .bind(&sites)
     .fetch_all(&st.db)
     .await?;
     // Aktuelle Leistung aller Geräte mit Strommessung (z. B. Shelly), Messwert höchstens 15 Minuten alt
@@ -115,9 +143,10 @@ pub async fn summary(State(st): State<AppState>, _user: CurrentUser) -> ApiResul
                 COALESCE(d.energy_role, CASE WHEN lower(COALESCE(d.name, '') || ' ' || COALESCE(d.reported_name, '') || ' ' || COALESCE(d.hostname, ''))
     ~ '(balkon|solar|photovolt|wechselrichter|inverter|\\mpv\\M|\\mbkw\\M)' THEN 'producer' ELSE 'consumer' END)
            FROM device_stats s JOIN devices d ON d.id = s.device_id
-          WHERE s.power_w IS NOT NULL AND s.time > now() - interval '15 minutes'
+          WHERE s.power_w IS NOT NULL AND s.time > now() - interval '15 minutes' AND ($1::bigint[] IS NULL OR d.site_id = ANY($1))
           ORDER BY s.device_id, s.time DESC",
     )
+    .bind(&sites)
     .fetch_all(&st.db)
     .await?;
     // Heute (ab Mitternacht, Ortszeit) verbraucht/erzeugt – aus den Minutenwerten, ungefähr
@@ -129,15 +158,18 @@ pub async fn summary(State(st): State<AppState>, _user: CurrentUser) -> ApiResul
                     time_bucket('1 minute', s.time) AS b, avg(abs(s.power_w))::float8 AS w
                FROM device_stats s JOIN devices d ON d.id = s.device_id
               WHERE s.power_w IS NOT NULL AND s.time > (date_trunc('day', now() AT TIME ZONE $1) AT TIME ZONE $1)
+                AND ($2::bigint[] IS NULL OR d.site_id = ANY($2))
               GROUP BY d.id, role, b) x
           GROUP BY role",
     )
     .bind(&tz)
+    .bind(&sites)
     .fetch_all(&st.db)
     .await?;
     let kwh = |role: &str| energy.iter().find(|(r, _)| r == role).and_then(|(_, v)| *v).map(|v| (v * 100.0).round() / 100.0);
     let types: Vec<(String, i64)> =
-        sqlx::query_as("SELECT COALESCE(device_type, 'unknown'), count(*) FROM devices GROUP BY 1 ORDER BY 2 DESC")
+        sqlx::query_as("SELECT COALESCE(device_type, 'unknown'), count(*) FROM devices WHERE ($1::bigint[] IS NULL OR site_id = ANY($1)) GROUP BY 1 ORDER BY 2 DESC")
+            .bind(&sites)
             .fetch_all(&st.db)
             .await?;
     Ok(Json(json!({
@@ -145,6 +177,7 @@ pub async fn summary(State(st): State<AppState>, _user: CurrentUser) -> ApiResul
         "last_discovery": last.map(|l| l.0),
         "scan": st.scan_progress.snapshot(),
         "open_alerts": open_alerts,
+        "unacked_alerts": unacked_alerts,
         "types": types.into_iter().map(|(t, n)| json!({ "type": t, "count": n })).collect::<Vec<_>>(),
         "energy_today": { "consumed_kwh": kwh("consumer"), "produced_kwh": kwh("producer") },
         "power": power
@@ -158,10 +191,28 @@ pub async fn summary(State(st): State<AppState>, _user: CurrentUser) -> ApiResul
     })))
 }
 
-pub async fn list(State(st): State<AppState>, _user: CurrentUser) -> ApiResult<Json<Vec<Device>>> {
-    let sql = format!("SELECT {DEVICE_COLUMNS} FROM devices ORDER BY ip");
-    let devices = sqlx::query_as::<_, Device>(&sql).fetch_all(&st.db).await?;
+pub async fn list(State(st): State<AppState>, user: Need<perm::View>, Query(q): Query<SiteQuery>) -> ApiResult<Json<Vec<Device>>> {
+    let sites = crate::sites::filter(&st.db, &user, "view", q.site).await?;
+    let tag = q.tag.as_deref().map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty());
+    let sql = format!(
+        "SELECT {DEVICE_COLUMNS} FROM devices
+          WHERE ($1::bigint[] IS NULL OR site_id = ANY($1)) AND ($2::text IS NULL OR $2 = ANY(tags))
+          ORDER BY site_id, ip"
+    );
+    let devices = sqlx::query_as::<_, Device>(&sql).bind(&sites).bind(&tag).fetch_all(&st.db).await?;
     Ok(Json(devices))
+}
+
+/// Alle verwendeten Tags (für Filter und Auswahl)
+pub async fn tags(State(st): State<AppState>, user: Need<perm::View>) -> ApiResult<Json<Vec<(String, i64)>>> {
+    let sites = user.site_filter("view");
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT t, count(*) FROM devices, unnest(tags) t WHERE ($1::bigint[] IS NULL OR site_id = ANY($1)) GROUP BY t ORDER BY t",
+    )
+    .bind(&sites)
+    .fetch_all(&st.db)
+    .await?;
+    Ok(Json(rows))
 }
 
 #[derive(Deserialize)]
@@ -193,10 +244,11 @@ struct StatPoint {
 
 pub async fn detail(
     State(st): State<AppState>,
-    _user: CurrentUser,
+    user: Need<perm::View>,
     Path(id): Path<i64>,
     Query(q): Query<RangeQuery>,
 ) -> ApiResult<Json<Value>> {
+    user.require_device(&st.db, "view", id).await?;
     let hours = q.hours.unwrap_or(24).clamp(1, 24 * 90);
     let sql = format!("SELECT {DEVICE_COLUMNS} FROM devices WHERE id = $1");
     let device = sqlx::query_as::<_, Device>(&sql)
@@ -251,7 +303,7 @@ pub async fn detail(
             .await?;
 
     // Was der UniFi-Controller über dieses Gerät weiß (als UniFi-Gerät oder als Client)
-    let (unifi_device, unifi_client) = match device.mac.as_deref() {
+    let (unifi_device, unifi_client) = match device.mac.as_deref().filter(|_| user.can_site("devices.diagnose", device.site_id)) {
         Some(mac) => {
             let find = |list: &'static str| {
                 format!(
@@ -262,7 +314,7 @@ pub async fn detail(
             };
             let dev: Option<(Value,)> = sqlx::query_as(&find("devices")).bind(mac).fetch_optional(&st.db).await?;
             // Was Router, Switches, Access Points und Controller über dieses Gerät wissen – zusammengeführt
-            let (clients, _) = all_clients(&st, Some(mac)).await?;
+            let (clients, _) = all_clients(&st, Some(mac), &Some(vec![device.site_id])).await?;
             (dev.map(|v| v.0), clients.into_iter().next())
         }
         None => (None, None),
@@ -300,14 +352,34 @@ pub struct DeviceUpdate {
     parent_id: Option<i64>,
     /// Strommessung: auto | consumer | producer | grid
     energy_role: Option<String>,
+    /// In einen anderen Sektor verschieben
+    site_id: Option<i64>,
+    /// Gerätegruppen (ersetzt die bisherigen)
+    tags: Option<Vec<String>>,
+}
+
+/// Tags vereinheitlichen: klein, ohne Leerzeichen am Rand, höchstens 20 Stück à 40 Zeichen
+fn clean_tags(tags: &[String]) -> ApiResult<Vec<String>> {
+    let mut out: Vec<String> = tags.iter().map(|t| t.trim().to_lowercase()).filter(|t| !t.is_empty()).collect();
+    if out.len() > 20 || out.iter().any(|t| t.chars().count() > 40 || t.contains(',')) {
+        return Err(ApiError::BadRequest("Höchstens 20 Tags mit je bis zu 40 Zeichen (ohne Komma)".into()));
+    }
+    out.sort();
+    out.dedup();
+    Ok(out)
 }
 
 pub async fn update(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::DevicesManage>,
     Path(id): Path<i64>,
     Json(req): Json<DeviceUpdate>,
 ) -> ApiResult<Json<Device>> {
+    user.require_device(&st.db, "devices.manage", id).await?;
+    if let Some(site) = req.site_id {
+        user.require_site("devices.manage", site)?;
+    }
+    let tags = req.tags.as_deref().map(clean_tags).transpose()?;
     if req.name.as_deref().is_some_and(|n| n.chars().count() > 200) {
         return Err(ApiError::BadRequest("Name darf höchstens 200 Zeichen haben".into()));
     }
@@ -352,7 +424,9 @@ pub async fn update(
             wan_interface_manual = CASE WHEN $6::text IS NULL THEN wan_interface_manual ELSE trim($6) <> '' END,
             parent_id = CASE WHEN $7::bigint IS NULL OR $7 = -1 THEN parent_id WHEN $7 = 0 THEN NULL ELSE $7 END,
             parent_manual = CASE WHEN $7::bigint IS NULL THEN parent_manual ELSE $7 <> -1 END,
-            energy_role = CASE WHEN $8::text IS NULL THEN energy_role WHEN $8 = 'auto' THEN NULL ELSE $8 END
+            energy_role = CASE WHEN $8::text IS NULL THEN energy_role WHEN $8 = 'auto' THEN NULL ELSE $8 END,
+            site_id = COALESCE((SELECT id FROM sites WHERE id = $9), site_id),
+            tags = COALESCE($10, tags)
           WHERE id = $1
           RETURNING {DEVICE_COLUMNS}"
     );
@@ -365,14 +439,22 @@ pub async fn update(
         .bind(&req.wan_interface)
         .bind(req.parent_id)
         .bind(&req.energy_role)
+        .bind(req.site_id)
+        .bind(&tags)
         .fetch_optional(&st.db)
-        .await?
+        .await
+        .map_err(|e| match &e {
+            sqlx::Error::Database(d) if d.is_unique_violation() => {
+                ApiError::BadRequest("Im Ziel-Sektor gibt es schon ein Gerät mit dieser IP-Adresse".into())
+            }
+            _ => e.into(),
+        })?
         .ok_or(ApiError::NotFound)?;
 
     if req.device_type.as_deref() == Some("auto") {
         crate::scanner::reclassify(&st.db, id).await?;
     }
-    audit::by(&st.db, &user, "device_update", json!({ "device_id": id, "ip": device.ip, "changes": req })).await;
+    audit::by(&st.db, &user, "device_update", json!({ "device_id": id, "ip": device.ip, "site_id": device.site_id, "changes": req })).await;
     if req.device_type.as_deref() == Some("auto") {
         let sql = format!("SELECT {DEVICE_COLUMNS} FROM devices WHERE id = $1");
         return Ok(Json(sqlx::query_as::<_, Device>(&sql).bind(id).fetch_one(&st.db).await?));
@@ -382,9 +464,10 @@ pub async fn update(
 
 pub async fn remove(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::DevicesManage>,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<Value>> {
+    user.require_device(&st.db, "devices.manage", id).await?;
     let (ip,): (String,) = sqlx::query_as("DELETE FROM devices WHERE id = $1 RETURNING host(ip)")
         .bind(id)
         .fetch_optional(&st.db)
@@ -402,10 +485,11 @@ pub struct CredentialAssignment {
 /// Zugangsdaten eines Geräts festlegen und sofort abfragen
 pub async fn set_credentials(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::CredentialsManage>,
     Path(id): Path<i64>,
     Json(req): Json<CredentialAssignment>,
 ) -> ApiResult<Json<Value>> {
+    user.require_device(&st.db, "devices.manage", id).await?;
     let mut tx = st.db.begin().await?;
     sqlx::query("DELETE FROM device_credentials WHERE device_id = $1").bind(id).execute(&mut *tx).await?;
     sqlx::query(
@@ -423,7 +507,8 @@ pub async fn set_credentials(
 }
 
 /// Tiefe Abfrage sofort starten
-pub async fn poll_now(State(st): State<AppState>, _admin: AdminUser, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+pub async fn poll_now(State(st): State<AppState>, user: Need<perm::DevicesManage>, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+    user.require_device(&st.db, "devices.manage", id).await?;
     let _ = st.poll_tx.send(id);
     Ok(Json(json!({ "ok": true })))
 }
@@ -431,9 +516,10 @@ pub async fn poll_now(State(st): State<AppState>, _admin: AdminUser, Path(id): P
 /// Gespeicherten SSH-Host-Schlüssel vergessen (z. B. nach Neuinstallation des Geräts)
 pub async fn reset_ssh_key(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::DevicesManage>,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<Value>> {
+    user.require_device(&st.db, "devices.manage", id).await?;
     sqlx::query("UPDATE devices SET ssh_host_key = NULL, tls_pin = NULL, inventory_error = NULL WHERE id = $1")
         .bind(id)
         .execute(&st.db)
@@ -444,7 +530,8 @@ pub async fn reset_ssh_key(
 }
 
 /// Aktuelle Datenraten aller Schnittstellen (für die Live-Ansicht, alle ~2 s abgefragt)
-pub async fn live(State(st): State<AppState>, _user: CurrentUser, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+pub async fn live(State(st): State<AppState>, user: Need<perm::View>, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+    user.require_device(&st.db, "view", id).await?;
     crate::collect::live::live(&st, id)
         .await
         .map(Json)
@@ -467,10 +554,11 @@ pub struct InterfacePoint {
 /// Verlauf der Datenrate einer Schnittstelle
 pub async fn interface_history(
     State(st): State<AppState>,
-    _user: CurrentUser,
+    user: Need<perm::View>,
     Path(id): Path<i64>,
     Query(q): Query<InterfaceQuery>,
 ) -> ApiResult<Json<Vec<InterfacePoint>>> {
+    user.require_device(&st.db, "view", id).await?;
     let hours = q.hours.unwrap_or(24).clamp(1, 24 * 90);
     let bucket = (hours * 60 / 300).max(5);
     let points = sqlx::query_as::<_, InterfacePoint>(
@@ -497,10 +585,11 @@ pub struct SnmpQuery {
 /// SNMP-Explorer: beliebigen Teilbaum lesen, mit Namen aus den MIBs
 pub async fn snmp_explorer(
     State(st): State<AppState>,
-    _admin: AdminUser,
+    user: Need<perm::DevicesDiagnose>,
     Path(id): Path<i64>,
     Query(q): Query<SnmpQuery>,
 ) -> ApiResult<Json<Value>> {
+    user.require_device(&st.db, "devices.diagnose", id).await?;
     let start = q.oid.as_deref().filter(|o| !o.trim().is_empty()).unwrap_or("1.3.6.1.2.1.1");
     let base = crate::mib::resolve(&st.db, start)
         .await?
@@ -542,16 +631,19 @@ pub async fn snmp_explorer(
 #[derive(Deserialize)]
 pub struct EventQuery {
     limit: Option<i64>,
+    site: Option<i64>,
 }
 
+/// Ereignisse ohne Gerät (z. B. Scans) sehen nur Benutzer mit Recht in allen Sektoren
 pub async fn events(
     State(st): State<AppState>,
-    _user: CurrentUser,
+    user: Need<perm::View>,
     Query(q): Query<EventQuery>,
 ) -> ApiResult<Json<Vec<Event>>> {
     let limit = q.limit.unwrap_or(100).clamp(1, 500);
-    let sql = format!("{EVENT_SELECT} ORDER BY e.time DESC LIMIT $1");
-    let events = sqlx::query_as::<_, Event>(&sql).bind(limit).fetch_all(&st.db).await?;
+    let sites = crate::sites::filter(&st.db, &user, "view", q.site).await?;
+    let sql = format!("{EVENT_SELECT} WHERE ($2::bigint[] IS NULL OR d.site_id = ANY($2)) ORDER BY e.time DESC LIMIT $1");
+    let events = sqlx::query_as::<_, Event>(&sql).bind(limit).bind(&sites).fetch_all(&st.db).await?;
     Ok(Json(events))
 }
 
@@ -567,12 +659,14 @@ async fn diagnose_view(st: &AppState, id: i64) -> ApiResult<Json<Value>> {
 }
 
 /// Protokoll der letzten tiefen Abfrage: welche Schritte wurden versucht, was ging schief
-pub async fn diagnose(State(st): State<AppState>, _user: CurrentUser, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+pub async fn diagnose(State(st): State<AppState>, user: Need<perm::DevicesDiagnose>, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+    user.require_device(&st.db, "devices.diagnose", id).await?;
     diagnose_view(&st, id).await
 }
 
 /// Gerät sofort abfragen und das frische Protokoll zurückgeben
-pub async fn diagnose_now(State(st): State<AppState>, _admin: AdminUser, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+pub async fn diagnose_now(State(st): State<AppState>, user: Need<perm::DevicesDiagnose>, Path(id): Path<i64>) -> ApiResult<Json<Value>> {
+    user.require_device(&st.db, "devices.manage", id).await?;
     if let Err(e) = crate::collect::poll_device(&st, id).await {
         tracing::warn!("Diagnose von Gerät {id}: {e:#}");
     }
@@ -589,22 +683,30 @@ pub struct NewDevice {
     monitored: Option<bool>,
     #[serde(default)]
     credential_ids: Vec<i64>,
+    /// Sektor (leer = aus dem passenden Netz bzw. Standard-Sektor)
+    #[serde(default)]
+    site_id: Option<i64>,
+    #[serde(default)]
+    tags: Vec<String>,
 }
 
-/// Adresse prüfen bzw. Hostnamen auflösen; nur sinnvolle Unicast-Adressen
-async fn resolve_address(input: &str) -> ApiResult<std::net::Ipv4Addr> {
-    let input = input.trim();
+/// Adresse prüfen bzw. Hostnamen auflösen; nur sinnvolle Unicast-Adressen (IPv4 oder IPv6)
+async fn resolve_address(input: &str) -> ApiResult<std::net::IpAddr> {
+    let input = input.trim().trim_start_matches('[').trim_end_matches(']');
     if input.is_empty() || input.len() > 253 {
         return Err(ApiError::BadRequest(
             "Bitte eine IP-Adresse oder einen Hostnamen angeben.".into(),
         ));
     }
+    if let Ok(std::net::IpAddr::V6(v6)) = input.parse::<std::net::IpAddr>() {
+        // Link-lokale Adressen (fe80::) sind ohne Schnittstellenangabe nicht eindeutig erreichbar
+        if v6.is_unspecified() || v6.is_loopback() || v6.is_multicast() || (v6.segments()[0] & 0xffc0) == 0xfe80 {
+            return Err(ApiError::BadRequest(format!("{v6} kann nicht überwacht werden.")));
+        }
+        return Ok(std::net::IpAddr::V6(v6));
+    }
     let ip = if let Ok(ip) = input.parse::<std::net::Ipv4Addr>() {
         ip
-    } else if input.parse::<std::net::IpAddr>().is_ok() {
-        return Err(ApiError::BadRequest(
-            "IPv6 wird noch nicht unterstützt – bitte die IPv4-Adresse angeben.".into(),
-        ));
     } else {
         if !input
             .chars()
@@ -640,16 +742,22 @@ async fn resolve_address(input: &str) -> ApiResult<std::net::Ipv4Addr> {
             "{ip} kann nicht überwacht werden."
         )));
     }
-    Ok(ip)
+    Ok(std::net::IpAddr::V4(ip))
 }
 
 /// Gerät von Hand anlegen – auch außerhalb der Scan-Netze (VPN, Internet, andere Subnetze)
 pub async fn create(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::DevicesManage>,
     Json(req): Json<NewDevice>,
 ) -> ApiResult<Json<Value>> {
     let ip = resolve_address(&req.address).await?;
+    let site_id = match req.site_id.filter(|s| *s > 0) {
+        Some(s) => s,
+        None => crate::sites::site_for_ip(&st.db, &ip.to_string()).await?,
+    };
+    user.require_site("devices.manage", site_id)?;
+    let tags = clean_tags(&req.tags)?;
     let clean = |v: &Option<String>, max: usize| {
         v.as_deref()
             .map(str::trim)
@@ -668,13 +776,13 @@ pub async fn create(
         }
     }
     // Eingegebener Hostname bleibt als Name erhalten, wenn kein eigener Name gesetzt ist
-    let hostname = (req.address.trim().parse::<std::net::Ipv4Addr>().is_err())
+    let hostname = (req.address.trim().trim_start_matches('[').trim_end_matches(']').parse::<std::net::IpAddr>().is_err())
         .then(|| req.address.trim().to_lowercase());
 
     let inserted: Option<(i64,)> = sqlx::query_as(
-        "INSERT INTO devices (ip, name, hostname, notes, monitored, device_type, device_type_manual, status)
-         VALUES ($1::inet, $2, $3, $4, $5, $6, $7, 'unknown')
-         ON CONFLICT (ip) DO NOTHING RETURNING id",
+        "INSERT INTO devices (ip, name, hostname, notes, monitored, device_type, device_type_manual, status, site_id, tags)
+         VALUES ($1::inet, $2, $3, $4, $5, $6, $7, 'unknown', $8, $9)
+         ON CONFLICT (site_id, ip) DO NOTHING RETURNING id",
     )
     .bind(ip.to_string())
     .bind(&name)
@@ -683,11 +791,14 @@ pub async fn create(
     .bind(req.monitored.unwrap_or(true))
     .bind(kind)
     .bind(kind.is_some())
+    .bind(site_id)
+    .bind(&tags)
     .fetch_optional(&st.db)
     .await?;
     let Some((id,)) = inserted else {
-        let (existing,): (i64,) = sqlx::query_as("SELECT id FROM devices WHERE ip = $1::inet")
+        let (existing,): (i64,) = sqlx::query_as("SELECT id FROM devices WHERE ip = $1::inet AND site_id = $2")
             .bind(ip.to_string())
+            .bind(site_id)
             .fetch_one(&st.db)
             .await?;
         return Ok(Json(json!({ "ok": false, "exists": true, "id": existing,
@@ -719,37 +830,46 @@ pub async fn create(
         &st.db,
         &user,
         "device_add",
-        json!({ "device_id": id, "ip": ip.to_string(), "name": name }),
+        json!({ "device_id": id, "ip": ip.to_string(), "name": name, "site_id": site_id }),
     )
     .await;
 
-    // Im Hintergrund wie beim Scan untersuchen (Ports, Namen, Hersteller, Shelly) und danach tief abfragen
-    let state = st.clone();
-    tokio::spawn(async move {
-        let mac = crate::scanner::net::read_arp_table().get(&ip).cloned();
-        if let Err(e) = crate::scanner::discovery::store_device(&state, ip, None, mac).await {
-            tracing::warn!("Untersuchung von {ip} fehlgeschlagen: {e:#}");
-        }
-        let _ = state.poll_tx.send(id);
-    });
+    // Im Hintergrund wie beim Scan untersuchen (Ports, Namen, Hersteller, Shelly) und danach tief abfragen –
+    // nur wenn der Server den Sektor selbst erreicht (sonst übernimmt das die Probe des Sektors)
+    let (has_probe,): (bool,) = sqlx::query_as("SELECT EXISTS (SELECT 1 FROM probes WHERE site_id = $1 AND enabled)")
+        .bind(site_id)
+        .fetch_one(&st.db)
+        .await?;
+    if let (std::net::IpAddr::V4(ip), false) = (ip, has_probe) {
+        let state = st.clone();
+        tokio::spawn(async move {
+            let mac = crate::scanner::net::read_arp_table().get(&ip).cloned();
+            if let Err(e) = crate::scanner::discovery::store_device(&state, site_id, ip, None, mac).await {
+                tracing::warn!("Untersuchung von {ip} fehlgeschlagen: {e:#}");
+            }
+            let _ = state.poll_tx.send(id);
+        });
+    }
     Ok(Json(json!({ "ok": true, "id": id, "ip": ip.to_string() })))
 }
 
 /// Verbundene Geräte aus allen Quellen (UniFi, Router, Switches, Access Points), je MAC zusammengeführt.
 /// `only_mac`: nur dieses eine Gerät. Liefert (Clients, Quellen-Geräte).
-async fn all_clients(st: &AppState, only_mac: Option<&str>) -> ApiResult<(Vec<Value>, Vec<Value>)> {
+/// `sites`: nur Quellen (Router, Controller …) in diesen Sektoren
+async fn all_clients(st: &AppState, only_mac: Option<&str>, sites: &Option<Vec<i64>>) -> ApiResult<(Vec<Value>, Vec<Value>)> {
     use crate::collect::netclients;
-    let rows: Vec<(i64, String, Option<String>, Value)> = sqlx::query_as(
+    let rows: Vec<(i64, String, Option<String>, Value, i64)> = sqlx::query_as(
         "SELECT id, COALESCE(name, reported_name, hostname, host(ip)), lower(mac),
-                jsonb_build_object('unifi', inventory->'unifi', 'net', inventory->'netclients')
-           FROM devices WHERE inventory ? 'unifi' OR inventory ? 'netclients'",
+                jsonb_build_object('unifi', inventory->'unifi', 'net', inventory->'netclients'), site_id
+           FROM devices WHERE (inventory ? 'unifi' OR inventory ? 'netclients') AND ($1::bigint[] IS NULL OR site_id = ANY($1))",
     )
+    .bind(sites)
     .fetch_all(&st.db)
     .await?;
     let wanted = only_mac.and_then(netclients::norm_mac);
     let mut entries: Vec<Value> = Vec::new();
     let mut sources: Vec<Value> = Vec::new();
-    for (id, label, own_mac, inv) in &rows {
+    for (id, label, own_mac, inv, site_id) in &rows {
         let mut add = |mut c: Value, source: &str| {
             if wanted.as_deref().is_some_and(|w| c["mac"].as_str().and_then(netclients::norm_mac).as_deref() != Some(w)) {
                 return;
@@ -758,6 +878,7 @@ async fn all_clients(st: &AppState, only_mac: Option<&str>) -> ApiResult<(Vec<Va
                 c["source"] = json!(source);
             }
             c["source_id"] = json!(id);
+            c["source_site_id"] = json!(site_id);
             // Direkt an diesem Gerät angeschlossen → es ist der „Verbunden über“-Eintrag
             let direct = matches!(c["source"].as_str(), Some("wifi" | "switch" | "fritzbox" | "mikrotik"))
                 && (c["type"] == "wireless" || c.get("port").is_some_and(|p| !p.is_null()));
@@ -791,8 +912,10 @@ async fn all_clients(st: &AppState, only_mac: Option<&str>) -> ApiResult<(Vec<Va
     }
     let mut merged = netclients::merge(entries);
     let known: Vec<(i64, String, String)> = sqlx::query_as(
-        "SELECT id, lower(mac), COALESCE(name, reported_name, hostname, host(ip)) FROM devices WHERE mac IS NOT NULL",
+        "SELECT id, lower(mac), COALESCE(name, reported_name, hostname, host(ip)) FROM devices
+          WHERE mac IS NOT NULL AND ($1::bigint[] IS NULL OR site_id = ANY($1))",
     )
+    .bind(sites)
     .fetch_all(&st.db)
     .await?;
     let by_mac: std::collections::HashMap<&str, (i64, &str)> =
@@ -816,8 +939,12 @@ async fn all_clients(st: &AppState, only_mac: Option<&str>) -> ApiResult<(Vec<Va
 }
 
 /// Alle verbundenen Geräte (für Geräteliste, Clients-Reiter und Dashboard)
-pub async fn unifi_clients(State(st): State<AppState>, _user: CurrentUser) -> ApiResult<Json<Value>> {
-    let (clients, controllers) = all_clients(&st, None).await?;
+pub async fn unifi_clients(State(st): State<AppState>, user: CurrentUser) -> ApiResult<Json<Value>> {
+    // MAC-Adressen aller Geräte im Netz sind personenbezogen → eigenes Recht
+    if !user.permissions.can_any("devices.diagnose") {
+        return Ok(Json(json!({ "clients": [], "controllers": [], "restricted": true })));
+    }
+    let (clients, controllers) = all_clients(&st, None, &user.site_filter("devices.diagnose")).await?;
     Ok(Json(json!({ "clients": clients, "controllers": controllers })))
 }
 
@@ -828,8 +955,8 @@ const IMPORT_SOURCES: &[&str] = &["unifi", "fritzbox", "mikrotik", "wifi", "opns
 
 /// Kandidaten zum Übernehmen: nicht bekannt, IPv4 vorhanden, aus einer verlässlichen Quelle.
 /// `possible_duplicate`: ein vorhandenes Gerät mit gleichem Namen (z. B. Handy mit wechselnder MAC-Adresse).
-async fn import_candidates(st: &AppState) -> ApiResult<Vec<Value>> {
-    let (clients, _) = all_clients(st, None).await?;
+async fn import_candidates(st: &AppState, sites: &Option<Vec<i64>>) -> ApiResult<Vec<Value>> {
+    let (clients, _) = all_clients(st, None, sites).await?;
     let names: Vec<(i64, String, String)> = sqlx::query_as(
         "SELECT id, lower(COALESCE(name, reported_name, hostname)), host(ip) FROM devices
           WHERE COALESCE(name, reported_name, hostname) IS NOT NULL",
@@ -851,13 +978,14 @@ async fn import_candidates(st: &AppState) -> ApiResult<Vec<Value>> {
         out.push(json!({
             "ip": ip, "mac": mac, "name": name, "vendor": c["vendor"], "source_label": c["source_label"],
             "type": c["type"], "uplink_name": c["uplink_name"], "possible_duplicate": dup,
+            "site_id": c["source_site_id"],
         }));
     }
     Ok(out)
 }
 
-pub async fn import_preview(State(st): State<AppState>, _admin: AdminUser) -> ApiResult<Json<Value>> {
-    Ok(Json(json!({ "candidates": import_candidates(&st).await? })))
+pub async fn import_preview(State(st): State<AppState>, user: Need<perm::DevicesManage>) -> ApiResult<Json<Value>> {
+    Ok(Json(json!({ "candidates": import_candidates(&st, &user.site_filter("devices.manage")).await? })))
 }
 
 #[derive(Deserialize)]
@@ -867,10 +995,10 @@ pub struct ImportRequest {
 }
 
 /// Ausgewählte verbundene Geräte als Geräte anlegen
-pub async fn unifi_import(State(st): State<AppState>, AdminUser(user): AdminUser, Json(req): Json<ImportRequest>) -> ApiResult<Json<Value>> {
+pub async fn unifi_import(State(st): State<AppState>, Need(user, _): Need<perm::DevicesManage>, Json(req): Json<ImportRequest>) -> ApiResult<Json<Value>> {
     let wanted: std::collections::HashSet<String> = req.macs.iter().map(|m| m.to_lowercase()).collect();
-    let (mut ips, mut macs, mut names, mut vendors) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    for c in import_candidates(&st).await? {
+    let (mut ips, mut macs, mut names, mut vendors, mut sites) = (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    for c in import_candidates(&st, &user.site_filter("devices.manage")).await? {
         let (Some(ip), Some(mac)) = (c["ip"].as_str(), c["mac"].as_str()) else { continue };
         if !wanted.contains(&mac.to_lowercase()) {
             continue;
@@ -879,13 +1007,15 @@ pub async fn unifi_import(State(st): State<AppState>, AdminUser(user): AdminUser
         macs.push(mac.to_string());
         names.push(c["name"].as_str().map(str::to_string));
         vendors.push(c["vendor"].as_str().map(str::to_string));
+        // Übernommene Geräte landen im Sektor des Routers/Controllers, der sie meldet
+        sites.push(c["site_id"].as_i64().unwrap_or(crate::sites::DEFAULT_SITE));
     }
     let ids: Vec<(i64,)> = sqlx::query_as(
         "WITH ins AS (
-             INSERT INTO devices (ip, mac, reported_name, vendor, status)
-             SELECT u.ip::inet, u.mac, u.name, u.vendor, 'unknown'
-               FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[]) AS u(ip, mac, name, vendor)
-             ON CONFLICT (ip) DO NOTHING
+             INSERT INTO devices (ip, mac, reported_name, vendor, status, site_id)
+             SELECT u.ip::inet, u.mac, u.name, u.vendor, 'unknown', u.site
+               FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::bigint[]) AS u(ip, mac, name, vendor, site)
+             ON CONFLICT (site_id, ip) DO NOTHING
              RETURNING id, host(ip) AS ip, reported_name),
            ev AS (
              INSERT INTO events (device_id, kind, message)
@@ -896,6 +1026,7 @@ pub async fn unifi_import(State(st): State<AppState>, AdminUser(user): AdminUser
     .bind(&macs)
     .bind(&names)
     .bind(&vendors)
+    .bind(&sites)
     .fetch_all(&st.db)
     .await?;
     for (id,) in &ids {
@@ -919,7 +1050,8 @@ struct ImportedRow {
 }
 
 /// Übernommene Geräte (zum Aufräumen): mit Hinweis, ob offline bzw. doppelt
-pub async fn imported(State(st): State<AppState>, _admin: AdminUser) -> ApiResult<Json<Value>> {
+pub async fn imported(State(st): State<AppState>, user: Need<perm::DevicesManage>) -> ApiResult<Json<Value>> {
+    let sites = user.site_filter("devices.manage");
     let rows: Vec<ImportedRow> = sqlx::query_as(
         "SELECT d.id, COALESCE(d.name, d.reported_name, d.hostname, host(d.ip)) AS label, host(d.ip) AS ip, d.mac, d.status,
                 d.last_seen, d.first_seen, COALESCE(d.status = 'up' AND d.last_seen > now() - interval '15 minutes', false) AS online,
@@ -931,8 +1063,10 @@ pub async fn imported(State(st): State<AppState>, _admin: AdminUser) -> ApiResul
                   ORDER BY o.id LIMIT 1) AS duplicate_of
            FROM devices d
           WHERE EXISTS (SELECT 1 FROM events e WHERE e.device_id = d.id AND e.kind = 'added' AND e.message LIKE 'Aus %übernommen%')
+            AND ($1::bigint[] IS NULL OR d.site_id = ANY($1))
           ORDER BY d.first_seen DESC",
     )
+    .bind(&sites)
     .fetch_all(&st.db)
     .await?;
     Ok(Json(json!({ "devices": rows })))
@@ -944,11 +1078,16 @@ pub struct BulkDelete {
 }
 
 /// Mehrere Geräte auf einmal löschen (z. B. übernommene Dubletten)
-pub async fn bulk_delete(State(st): State<AppState>, AdminUser(user): AdminUser, Json(req): Json<BulkDelete>) -> ApiResult<Json<Value>> {
+pub async fn bulk_delete(State(st): State<AppState>, Need(user, _): Need<perm::DevicesManage>, Json(req): Json<BulkDelete>) -> ApiResult<Json<Value>> {
     if req.ids.len() > 5000 {
         return Err(ApiError::BadRequest("Zu viele Geräte auf einmal".into()));
     }
-    let deleted: Vec<(String,)> = sqlx::query_as("DELETE FROM devices WHERE id = ANY($1) RETURNING host(ip)").bind(&req.ids).fetch_all(&st.db).await?;
+    let sites = user.site_filter("devices.manage");
+    let deleted: Vec<(String,)> = sqlx::query_as("DELETE FROM devices WHERE id = ANY($1) AND ($2::bigint[] IS NULL OR site_id = ANY($2)) RETURNING host(ip)")
+        .bind(&req.ids)
+        .bind(&sites)
+        .fetch_all(&st.db)
+        .await?;
     audit::by(&st.db, &user, "device_delete_bulk", json!({ "count": deleted.len(), "ips": deleted.iter().map(|d| &d.0).collect::<Vec<_>>() })).await;
     Ok(Json(json!({ "ok": true, "deleted": deleted.len() })))
 }

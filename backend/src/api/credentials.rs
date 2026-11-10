@@ -12,7 +12,7 @@ use sqlx::FromRow;
 
 use crate::{
     audit,
-    auth::AdminUser,
+    auth::{perm, Need},
     collect::Secret,
     error::{ApiError, ApiResult},
     AppState,
@@ -36,7 +36,7 @@ const SELECT: &str = "SELECT c.id, c.name, c.kind, c.username, c.port, c.auto, c
                              (SELECT count(*) FROM device_credentials dc WHERE dc.credential_id = c.id) AS device_count
                         FROM credentials c";
 
-pub async fn list(State(st): State<AppState>, _admin: AdminUser) -> ApiResult<Json<Vec<CredentialInfo>>> {
+pub async fn list(State(st): State<AppState>, _admin: Need<perm::CredentialsManage>) -> ApiResult<Json<Vec<CredentialInfo>>> {
     let sql = format!("{SELECT} ORDER BY c.name");
     Ok(Json(sqlx::query_as::<_, CredentialInfo>(&sql).fetch_all(&st.db).await?))
 }
@@ -100,9 +100,10 @@ fn merge(mut base: Secret, update: Secret) -> Secret {
 
 pub async fn create(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::CredentialsManage>,
     Json(req): Json<CredentialInput>,
 ) -> ApiResult<Json<CredentialInfo>> {
+    user.require_recent_auth(&st.db).await?;
     let name = req.name.as_deref().map(str::trim).filter(|n| !n.is_empty() && n.chars().count() <= 100);
     let name = name.ok_or_else(|| ApiError::BadRequest("Bitte einen Namen (max. 100 Zeichen) angeben".into()))?;
     let kind = req.kind.as_deref().unwrap_or_default();
@@ -152,10 +153,11 @@ pub async fn create(
 
 pub async fn update(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::CredentialsManage>,
     Path(id): Path<i64>,
     Json(req): Json<CredentialInput>,
 ) -> ApiResult<Json<CredentialInfo>> {
+    user.require_recent_auth(&st.db).await?;
     let (kind, sealed, auto): (String, String, bool) =
         sqlx::query_as("SELECT kind, secret, auto FROM credentials WHERE id = $1")
             .bind(id)
@@ -187,7 +189,7 @@ pub async fn update(
 
 pub async fn remove(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::CredentialsManage>,
     Path(id): Path<i64>,
 ) -> ApiResult<Json<Value>> {
     let (name,): (String,) = sqlx::query_as("DELETE FROM credentials WHERE id = $1 RETURNING name")
@@ -211,7 +213,7 @@ pub struct TestRequest {
 /// Zugangsdaten gegen ein Gerät testen (ohne Zuordnung) – mit verständlicher Rückmeldung
 pub async fn test(
     State(st): State<AppState>,
-    _admin: AdminUser,
+    _admin: Need<perm::CredentialsManage>,
     Path(id): Path<i64>,
     Json(req): Json<TestRequest>,
 ) -> ApiResult<Json<crate::collect::check::CheckResult>> {
@@ -230,7 +232,7 @@ pub struct ScanRequest {
 /// Suchlauf starten: testen und bei Erfolg zuordnen
 pub async fn scan(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::CredentialsManage>,
     Path(id): Path<i64>,
     Json(req): Json<ScanRequest>,
 ) -> ApiResult<Json<crate::collect::check::Job>> {
@@ -244,13 +246,13 @@ pub async fn scan(
 
 pub async fn scan_status(
     State(st): State<AppState>,
-    _admin: AdminUser,
+    _admin: Need<perm::CredentialsManage>,
     Path(id): Path<i64>,
 ) -> Json<crate::collect::check::Job> {
     Json(st.cred_jobs.get(id))
 }
 
-pub async fn devices(State(st): State<AppState>, _admin: AdminUser, Path(id): Path<i64>) -> ApiResult<Json<Vec<i64>>> {
+pub async fn devices(State(st): State<AppState>, _admin: Need<perm::CredentialsManage>, Path(id): Path<i64>) -> ApiResult<Json<Vec<i64>>> {
     let rows: Vec<(i64,)> = sqlx::query_as("SELECT device_id FROM device_credentials WHERE credential_id = $1")
         .bind(id)
         .fetch_all(&st.db)
@@ -266,7 +268,7 @@ pub struct AssignRequest {
 /// Zuordnung ohne Test festlegen (genau diese Geräte)
 pub async fn set_devices(
     State(st): State<AppState>,
-    AdminUser(user): AdminUser,
+    Need(user, _): Need<perm::CredentialsManage>,
     Path(id): Path<i64>,
     Json(req): Json<AssignRequest>,
 ) -> ApiResult<Json<Value>> {

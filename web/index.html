@@ -26,6 +26,8 @@
       <nav id="nav">
         <p class="nav-label">Übersicht</p>
         <a href="#/dashboard"><svg class="i"><use href="icons.svg?v=0.9.16#i-layout-dashboard"/></svg>Dashboard</a>
+        <a href="#/leitstand"><svg class="i"><use href="icons.svg?v=0.9.16#i-device-desktop"/></svg>Leitstand</a>
+        <a href="#/sites"><svg class="i"><use href="icons.svg?v=0.9.16#i-building"/></svg>Sektoren</a>
         <a href="#/devices"><svg class="i"><use href="icons.svg?v=0.9.16#i-devices"/></svg>Geräte</a>
         <a href="#/alerts"><svg class="i"><use href="icons.svg?v=0.9.16#i-bell"/></svg>Alarme<span class="nav-badge" id="alert-badge" hidden></span></a>
         <a href="#/checks"><svg class="i"><use href="icons.svg?v=0.9.16#i-world-www"/></svg>Dienste</a>
@@ -33,18 +35,18 @@
         <a href="#/energy"><svg class="i"><use href="icons.svg?v=0.9.16#i-bolt"/></svg>Energie</a>
         <a href="#/events"><svg class="i"><use href="icons.svg?v=0.9.16#i-list-details"/></svg>Ereignisse</a>
         <a href="https://github.com/Sirbuschi2003/NetPulse/blob/main/docs/HANDBUCH.md" target="_blank" rel="noopener noreferrer"><svg class="i"><use href="icons.svg?v=0.9.16#i-info-circle"/></svg>Handbuch</a>
-        <p class="nav-label admin-only">Verwaltung</p>
-        <a href="#/networks" class="admin-only"><svg class="i"><use href="icons.svg?v=0.9.16#i-topology-star-3"/></svg>Netzwerke</a>
-        <a href="#/credentials" class="admin-only"><svg class="i"><use href="icons.svg?v=0.9.16#i-key"/></svg>Zugangsdaten</a>
-        <a href="#/syslog" class="admin-only"><svg class="i"><use href="icons.svg?v=0.9.16#i-file-text"/></svg>Protokolle</a>
-        <a href="#/statuspage" class="admin-only"><svg class="i"><use href="icons.svg?v=0.9.16#i-world"/></svg>Statusseite</a>
-        <a href="#/integrations" class="admin-only"><svg class="i"><use href="icons.svg?v=0.9.16#i-plug-connected"/></svg>Verbundene Programme</a>
-        <a href="#/maintenance" class="admin-only"><svg class="i"><use href="icons.svg?v=0.9.16#i-calendar-time"/></svg>Wartung</a>
-        <a href="#/channels" class="admin-only"><svg class="i"><use href="icons.svg?v=0.9.16#i-send"/></svg>Benachrichtigungen</a>
-        <a href="#/users" class="admin-only"><svg class="i"><use href="icons.svg?v=0.9.16#i-users"/></svg>Benutzer</a>
-        <a href="#/audit" class="admin-only"><svg class="i"><use href="icons.svg?v=0.9.16#i-shield-lock"/></svg>Audit-Log</a>
-        <a href="#/logs" class="admin-only"><svg class="i"><use href="icons.svg?v=0.9.16#i-file-text"/></svg>System-Log</a>
-        <a href="#/backup" class="admin-only"><svg class="i"><use href="icons.svg?v=0.9.16#i-database"/></svg>Sicherung</a>
+        <p class="nav-label" data-perm="alerts.manage audit.view backup.manage credentials.manage devices.diagnose maintenance.manage networks.manage settings.manage users.manage">Verwaltung</p>
+        <a href="#/networks" data-perm="networks.manage"><svg class="i"><use href="icons.svg?v=0.9.16#i-topology-star-3"/></svg>Netzwerke</a>
+        <a href="#/credentials" data-perm="credentials.manage"><svg class="i"><use href="icons.svg?v=0.9.16#i-key"/></svg>Zugangsdaten</a>
+        <a href="#/syslog" data-perm="devices.diagnose"><svg class="i"><use href="icons.svg?v=0.9.16#i-file-text"/></svg>Protokolle</a>
+        <a href="#/statuspage" data-perm="settings.manage"><svg class="i"><use href="icons.svg?v=0.9.16#i-world"/></svg>Statusseite</a>
+        <a href="#/integrations" data-perm="settings.manage"><svg class="i"><use href="icons.svg?v=0.9.16#i-plug-connected"/></svg>Verbundene Programme</a>
+        <a href="#/maintenance" data-perm="maintenance.manage"><svg class="i"><use href="icons.svg?v=0.9.16#i-calendar-time"/></svg>Wartung</a>
+        <a href="#/channels" data-perm="alerts.manage"><svg class="i"><use href="icons.svg?v=0.9.16#i-send"/></svg>Benachrichtigungen</a>
+        <a href="#/users" data-perm="users.manage"><svg class="i"><use href="icons.svg?v=0.9.16#i-users"/></svg>Benutzer</a>
+        <a href="#/audit" data-perm="audit.view"><svg class="i"><use href="icons.svg?v=0.9.16#i-shield-lock"/></svg>Audit-Log</a>
+        <a href="#/logs" data-perm="audit.view"><svg class="i"><use href="icons.svg?v=0.9.16#i-file-text"/></svg>System-Log</a>
+        <a href="#/backup" data-perm="backup.manage"><svg class="i"><use href="icons.svg?v=0.9.16#i-database"/></svg>Sicherung</a>
       </nav>
       <div class="scan-mini" id="scan-mini" hidden></div>
       <div class="sidebar-foot">
@@ -74,6 +76,7 @@
   <script src="devices.js?v=0.9.16"></script>
   <script src="admin.js?v=0.9.16"></script>
   <script src="energy.js?v=0.9.16"></script>
-    <script src="integrations.js?v=0.9.16"></script>
+  <script src="integrations.js?v=0.9.16"></script>
+  <script src="sectors.js?v=0.9.16"></script>
 </body>
 </html>
