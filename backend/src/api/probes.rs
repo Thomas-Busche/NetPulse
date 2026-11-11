@@ -196,14 +196,28 @@ pub struct Results {
     results: Vec<ResultRow>,
     #[serde(default)]
     error: Option<String>,
+    /// Vor Ort erkannte Netze (ältere Probes senden keine)
+    #[serde(default)]
+    local_networks: Option<Vec<crate::scanner::local::LocalNetwork>>,
 }
 
 /// Ergebnisse der Statusprüfung – nur für Geräte des eigenen Sektors
 pub async fn results(State(st): State<AppState>, headers: HeaderMap, Json(req): Json<Results>) -> ApiResult<Json<Value>> {
     let (probe_id, site_id) = probe_from(&st, &headers).await?;
-    sqlx::query("UPDATE probes SET last_error = $2 WHERE id = $1")
+    // Höchstens 32 Netze übernehmen – die Liste kommt von außen
+    let local = req.local_networks.map(|n| {
+        let valid: Vec<_> = n
+            .into_iter()
+            .filter(|n| crate::scanner::net::parse_cidr(&n.cidr).is_ok() && n.interface.len() <= 64 && n.address.len() <= 64)
+            .filter(|n| n.gateway.as_deref().is_none_or(|g| g.parse::<std::net::Ipv4Addr>().is_ok()))
+            .take(32)
+            .collect();
+        json!(valid)
+    });
+    sqlx::query("UPDATE probes SET last_error = $2, local_networks = COALESCE($3, local_networks) WHERE id = $1")
         .bind(probe_id)
         .bind(req.error.map(|e| e.chars().take(500).collect::<String>()))
+        .bind(local)
         .execute(&st.db)
         .await?;
     let ids: Vec<i64> = req.results.iter().map(|r| r.id).collect();

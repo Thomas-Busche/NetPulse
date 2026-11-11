@@ -5,6 +5,7 @@
 //! - `net`      : Netzwerk-Hilfsfunktionen
 
 pub mod discovery;
+pub mod local;
 pub mod monitor;
 pub mod names;
 pub mod net;
@@ -93,13 +94,16 @@ struct ClassifyRow {
     inventory: Option<Value>,
     model: Option<String>,
     device_type_manual: bool,
+    site_id: i64,
+    is_gateway: bool,
 }
 
 /// Gerätetyp neu bestimmen (außer er wurde von Hand gesetzt)
 pub async fn reclassify(db: &PgPool, device_id: i64) -> sqlx::Result<()> {
     let row: Option<ClassifyRow> = sqlx::query_as(
-        "SELECT host(ip) AS ip, open_ports, hostname, vendor, mac, inventory, model, device_type_manual
-           FROM devices WHERE id = $1",
+        "SELECT host(d.ip) AS ip, d.open_ports, d.hostname, d.vendor, d.mac, d.inventory, d.model, d.device_type_manual, d.site_id,
+                EXISTS (SELECT 1 FROM networks n WHERE n.site_id = d.site_id AND n.gateway = d.ip) AS is_gateway
+           FROM devices d WHERE d.id = $1",
     )
     .bind(device_id)
     .fetch_optional(db)
@@ -116,6 +120,10 @@ pub async fn reclassify(db: &PgPool, device_id: i64) -> sqlx::Result<()> {
         random_mac: row.mac.as_deref().is_some_and(oui::is_random),
         inventory: row.inventory.as_ref(),
         model: row.model.as_deref(),
+        // Eingetragenes Gateway oder – im Hauptstandort – ein Gateway aus der Routing-Tabelle des Servers
+        gateway: row.is_gateway
+            || (row.site_id == crate::sites::DEFAULT_SITE
+                && local::gateways().iter().any(|(_, gw)| gw.to_string() == row.ip)),
     });
     sqlx::query("UPDATE devices SET device_type = $2 WHERE id = $1 AND device_type IS DISTINCT FROM $2")
         .bind(device_id)

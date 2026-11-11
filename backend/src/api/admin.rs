@@ -124,6 +124,42 @@ pub async fn add_network(
     Ok(Json(sqlx::query_as::<_, Network>(&sql).bind(id).fetch_one(&st.db).await?))
 }
 
+#[derive(Deserialize)]
+pub struct DetectQuery {
+    #[serde(default)]
+    site_id: Option<i64>,
+}
+
+/// Eigene Netze erkennen: im Hauptstandort die Schnittstellen des Servers, in einem Sektor mit Probe
+/// die Netze, die die Probe vor Ort gemeldet hat. `exists` = in diesem Sektor schon eingetragen.
+pub async fn detect_networks(
+    State(st): State<AppState>,
+    Need(user, _): Need<perm::NetworksManage>,
+    Query(q): Query<DetectQuery>,
+) -> ApiResult<Json<Value>> {
+    let site_id = q.site_id.unwrap_or(crate::sites::DEFAULT_SITE);
+    user.require_site("networks.manage", site_id)?;
+    let probe: Option<(String, Option<Value>)> =
+        sqlx::query_as("SELECT name, local_networks FROM probes WHERE site_id = $1 AND enabled").bind(site_id).fetch_optional(&st.db).await?;
+    let (source, found): (String, Vec<Value>) = match probe {
+        Some((name, nets)) => (
+            format!("Probe {name}"),
+            nets.and_then(|v| v.as_array().cloned()).unwrap_or_default(),
+        ),
+        None => ("NetPulse-Server".into(), scanner::local::detect().into_iter().map(|n| json!(n)).collect()),
+    };
+    let existing: Vec<(String,)> = sqlx::query_as("SELECT cidr::text FROM networks WHERE site_id = $1").bind(site_id).fetch_all(&st.db).await?;
+    let networks: Vec<Value> = found
+        .into_iter()
+        .map(|mut n| {
+            let exists = existing.iter().any(|(c,)| Some(c.as_str()) == n["cidr"].as_str());
+            n["exists"] = json!(exists);
+            n
+        })
+        .collect();
+    Ok(Json(json!({ "site_id": site_id, "source": source, "networks": networks })))
+}
+
 /// Name, Sektor, VLAN, Gateway, Beschreibung, Zeitplan und „aktiv“ ändern (die Adresse selbst bleibt)
 #[derive(Deserialize)]
 pub struct NetworkUpdate {

@@ -1721,7 +1721,7 @@ function installHint() {
   const ua = navigator.userAgent;
   if (isStandalone()) return { ok: true, text: 'NetPulse läuft bereits als installierte App.' };
   if (location.protocol !== 'https:') {
-    return { ok: false, text: 'Installieren geht nur über HTTPS mit gültigem Zertifikat – also über deine eigene Adresse (z. B. https://monitoring.buschehome.de), nicht über die IP-Adresse.' };
+    return { ok: false, text: 'Installieren geht nur über HTTPS mit gültigem Zertifikat – also über deine eigene Adresse (z. B. https://monitoring.example.org), nicht über die IP-Adresse.' };
   }
   if (/iPhone|iPad/.test(ua)) return { ok: true, text: 'iPhone/iPad: in Safari unten auf „Teilen“ tippen → „Zum Home-Bildschirm“.' };
   if (/Firefox\//.test(ua) && !/Android/.test(ua)) {

@@ -308,7 +308,28 @@ async fn bootstrap(db: &PgPool, config: &Config) -> Result<()> {
 
     let (networks,): (i64,) = sqlx::query_as("SELECT count(*) FROM networks").fetch_one(db).await?;
     if networks == 0 {
-        for cidr in &config.initial_networks {
+        // Leer oder „auto“: direkt angeschlossene Netze des Hosts übernehmen; „off“/„none“: nichts freigeben
+        let wanted = &config.initial_networks;
+        let disabled = wanted.iter().any(|n| matches!(n.to_lowercase().as_str(), "off" | "none" | "aus"));
+        if !disabled && (wanted.is_empty() || wanted.iter().any(|n| n.eq_ignore_ascii_case("auto"))) {
+            let found = scanner::local::detect();
+            if found.is_empty() {
+                tracing::warn!("Keine eigenen Netze erkannt (läuft der Container mit network_mode: host?) – bitte unter „Netzwerke“ eintragen");
+            }
+            for n in found {
+                sqlx::query(
+                    "INSERT INTO networks (cidr, name, gateway, description) VALUES ($1::cidr, $2, $3::inet, $4) ON CONFLICT DO NOTHING",
+                )
+                .bind(&n.cidr)
+                .bind(format!("Automatisch erkannt ({})", n.interface))
+                .bind(n.gateway.as_deref())
+                .bind(if n.narrowed { "Größeres Netz – nur das /24 um die eigene Adresse übernommen" } else { "" })
+                .execute(db)
+                .await?;
+                tracing::info!("Netz {} an {} automatisch erkannt und zum Scannen freigegeben", n.cidr, n.interface);
+            }
+        }
+        for cidr in wanted.iter().filter(|n| !matches!(n.to_lowercase().as_str(), "auto" | "off" | "none" | "aus")) {
             // Ein ungültiger Eintrag soll den Start nicht verhindern – das Netz kann
             // danach in der Oberfläche korrekt angelegt werden.
             let (addr, prefix) = match scanner::net::parse_cidr(cidr) {

@@ -103,7 +103,9 @@ pub async fn run() -> Result<()> {
             .buffer_unordered(64)
             .collect()
             .await;
-        match client.post("results", &json!({ "results": results, "error": last_error.take() })).await {
+        // Eigene Netze mitschicken – der Server schlägt sie unter „Netze erkennen“ für den Sektor vor
+        let local = crate::scanner::local::detect();
+        match client.post("results", &json!({ "results": results, "error": last_error.take(), "local_networks": local })).await {
             Ok(()) => tracing::debug!("{} Prüfergebnisse gemeldet", results.len()),
             Err(e) => tracing::warn!("Ergebnisse nicht gesendet: {e:#}"),
         }

@@ -268,15 +268,16 @@ async function viewNetworks() {
     <div id="scan-area"></div>
     <div class="grid">
       <section class="card span-2"><header><h2>${icon('topology-star-3')}Freigegebene Netze</h2>
-        <button type="button" class="ghost sm" id="scan-all">${icon('radar', 'i-sm')}Alle scannen</button></header>
+        <div class="actions"><button type="button" class="ghost sm" id="net-detect">${icon('search', 'i-sm')}Netze erkennen</button>
+        <button type="button" class="ghost sm" id="scan-all">${icon('radar', 'i-sm')}Alle scannen</button></div></header>
         <div id="net-list"><div class="empty">Lade …</div></div></section>
       <section class="card span-1"><header><h2>${icon('plus')}Netz hinzufügen</h2></header>
         <form class="form" id="net-form">
-          <label>Netz (CIDR, IPv4 oder IPv6)<input name="cidr" placeholder="192.168.178.0/24" required></label>
-          <label>Name<input name="name" placeholder="Heimnetz" maxlength="100" required></label>
+          <label>Netz (CIDR, IPv4 oder IPv6)<input name="cidr" placeholder="z. B. 192.168.1.0/24" required></label>
+          <label>Name<input name="name" placeholder="z. B. Büro-LAN" maxlength="100" required></label>
           <label>Sektor<select name="site_id">${siteOptions(1, { perm: 'networks.manage' })}</select></label>
           <div class="form-row"><label>VLAN<input name="vlan_id" type="number" min="1" max="4094"></label>
-            <label>Gateway<input name="gateway" placeholder="192.168.178.1"></label></div>
+            <label>Gateway<input name="gateway" placeholder="z. B. 192.168.1.1"></label></div>
           <button type="submit">${icon('radar')}Hinzufügen &amp; sofort scannen</button>
           <p class="hint">Ein neues Netz wird sofort gescannt – auch wenn gerade ein anderer Scan läuft.</p>
         </form></section>
@@ -301,12 +302,13 @@ async function viewNetworks() {
         <td class="actions"><button class="ghost sm" data-scan="${n.id}" type="button" title="Jetzt scannen">${icon('refresh', 'i-sm')}</button>
           <button class="ghost sm" data-net-edit="${n.id}" type="button" title="Bearbeiten">${icon('edit', 'i-sm')}</button>
           <button class="ghost sm" data-del="${n.id}" data-cidr="${esc(n.cidr)}" type="button" title="Entfernen">${icon('trash', 'i-sm')}</button></td></tr>`;
-      }).join('')}</tbody></table></div>` : empty('Noch keine Netze – rechts eines hinzufügen.', 'topology-star-3');
+      }).join('')}</tbody></table></div>` : empty('Noch keine Netze – über „Netze erkennen“ übernehmen oder rechts von Hand hinzufügen.', 'topology-star-3');
     applyWidths(view());
   };
 
   // Ereignisse einmal binden (Liste per Delegation, da sie neu aufgebaut wird)
   $('#scan-all').addEventListener('click', () => attempt(() => api('/scan', { method: 'POST' }), 'Scan aller Netze gestartet'));
+  $('#net-detect').addEventListener('click', () => detectDialog(render));
   $('#net-form').addEventListener('submit', (ev) => {
     ev.preventDefault();
     const form = ev.target;
@@ -364,6 +366,45 @@ async function viewNetworks() {
 }
 
 /** Probes: NetPulse-Ableger, die Netze und Geräte eines entfernten Sektors vor Ort prüfen */
+/** Eigene Netze des Servers bzw. der Probe eines Sektors vorschlagen und per Klick übernehmen */
+function detectDialog(onAdded) {
+  const dlg = openModal('Netze erkennen', `<div class="form">
+      <label>Sektor<select id="det-site">${siteOptions(1, { perm: 'networks.manage' })}</select></label>
+      <div id="det-list"><div class="empty">Suche …</div></div>
+      <p class="hint">Erkannt werden die Netze, in denen NetPulse (bzw. die Probe des Sektors) selbst eine Adresse hat, samt Router
+        aus der Routing-Tabelle – unabhängig von Router-Hersteller und Adressbereich. Docker-, VPN- und VM-Netze werden übersprungen.
+        Nur eigene oder freigegebene Netze übernehmen.</p></div>`);
+  const load = async () => {
+    const box = $('#det-list', dlg);
+    box.innerHTML = '<div class="empty">Suche …</div>';
+    try {
+      const r = await api(`/networks/detect?site_id=${Number($('#det-site', dlg).value) || 1}`);
+      box.innerHTML = r.networks.length ? `<p class="muted small">Quelle: ${esc(r.source)}</p><div class="table-wrap"><table>
+        <thead><tr><th>Netz</th><th>Schnittstelle</th><th>Gateway</th><th></th></tr></thead><tbody>${r.networks.map((n, i) => `<tr>
+          <td><div class="mono">${esc(n.cidr)}</div><div class="muted small">eigene Adresse ${esc(n.address)}${n.narrowed ? ' · größeres Netz, auf /24 begrenzt' : ''}</div></td>
+          <td class="small">${esc(n.interface)}</td><td class="mono small">${esc(n.gateway || '–')}</td>
+          <td class="actions">${n.exists ? '<span class="badge plain">eingetragen</span>'
+            : `<button type="button" class="sm" data-take="${i}">${icon('plus', 'i-sm')}Übernehmen</button>`}</td></tr>`).join('')}</tbody></table></div>`
+        : empty(r.source.startsWith('Probe') ? 'Die Probe hat noch keine Netze gemeldet – ist sie online und aktuell?'
+          : 'Keine Netze erkannt. Läuft NetPulse mit network_mode: host? Sonst bitte von Hand eintragen.', 'search');
+      box.onclick = (ev) => {
+        const btn = ev.target.closest('[data-take]');
+        if (!btn) return;
+        const n = r.networks[Number(btn.dataset.take)];
+        attempt(async () => {
+          await api('/networks', { method: 'POST', body: { cidr: n.cidr, name: `Erkannt (${n.interface})`, site_id: r.site_id, gateway: n.gateway || null } });
+          await load();
+          setTimeout(onAdded, 1500);
+        }, `Netz ${n.cidr} übernommen – Scan startet`);
+      };
+    } catch (e) {
+      box.innerHTML = empty(e.message || 'Erkennung fehlgeschlagen', 'alert-triangle');
+    }
+  };
+  $('#det-site', dlg).addEventListener('change', load);
+  load();
+}
+
 async function renderProbes() {
   const area = $('#probe-area');
   const probes = await api('/probes');
@@ -879,8 +920,8 @@ async function viewChannels() {
       $('#ch-preview-btn', dlg).hidden = form.kind.value !== 'email';
     };
     $('#ch-preview-btn', dlg).addEventListener('click', () => {
-      const sample = { titel: 'Offline: NAS (192.168.178.10)', meldung: 'NAS (192.168.178.10) ist seit 5 Min. nicht erreichbar', schwere: 'Kritisch',
-        geraet: 'NAS', ip: '(192.168.178.10)', regel: 'Server offline', wert: 'seit 5 Min. offline', zeit: new Date().toLocaleString('de-DE').slice(0, -3), link: location.origin + '/#/device/1' };
+      const sample = { titel: 'Offline: NAS (192.168.1.10)', meldung: 'NAS (192.168.1.10) ist seit 5 Min. nicht erreichbar', schwere: 'Kritisch',
+        geraet: 'NAS', ip: '(192.168.1.10)', regel: 'Server offline', wert: 'seit 5 Min. offline', zeit: new Date().toLocaleString('de-DE').slice(0, -3), link: location.origin + '/#/device/1' };
       const fill = (t) => t.replace(/\{\{(\w+)\}\}/g, (_, k) => sample[k] ?? '').split('\n')
         .filter((l) => !(/^[^:]{1,29}:$/.test(l.trim()))).join('\n').trim();
       const subject = fill(form.elements.cfg_subject.value || form.elements.cfg_subject.placeholder);
@@ -1197,7 +1238,7 @@ async function renderPush() {
   let status;
   if (!window.isSecureContext || location.protocol !== 'https:') {
     status = `<div class="notice">${icon('alert-triangle')}<span>Push und App-Installation brauchen HTTPS mit einem gültigen Zertifikat –
-      also den Aufruf über deine eigene Adresse (z. B. <code>https://monitoring.buschehome.de</code>) statt über die IP-Adresse.</span></div>`;
+      also den Aufruf über deine eigene Adresse (z. B. <code>https://monitoring.example.org</code>) statt über die IP-Adresse.</span></div>`;
   } else if (iosBrowser) {
     status = `<div class="notice info">${icon('device-mobile')}<span>iPhone/iPad: Zuerst in Safari auf <b>Teilen → „Zum Home-Bildschirm“</b>
       tippen und NetPulse dann über das neue Symbol öffnen – erst dort erlaubt iOS Push-Nachrichten.</span></div>`;

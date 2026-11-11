@@ -184,7 +184,7 @@ pub async fn test_channel(State(st): State<AppState>, _admin: Need<perm::AlertsM
         st.config.public_url.clone(),
     )
     .var("geraet", "Beispiel-NAS")
-    .var("ip", "(192.168.178.10)")
+    .var("ip", "(192.168.1.10)")
     .var("regel", "Test")
     .var("wert", "42 %");
     if kind == "app" {
