@@ -1,7 +1,7 @@
 # NetPulse – Stack für Portainer (fertige Images, nichts wird kompiliert)
 #
 # Portainer → Stacks → Add stack → Repository
-#   Repository URL:    https://github.com/Sirbuschi2003/NetPulse
+#   Repository URL:    https://github.com/Thomas-Busche/NetPulse
 #   Repository reference: refs/heads/main
 #   Compose path:      deploy/portainer-stack.yml
 # Umgebungsvariablen (unten im Formular):

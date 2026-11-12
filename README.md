@@ -74,13 +74,13 @@ Handbuch: [docs/HANDBUCH.md](docs/HANDBUCH.md) · Aufbau und Roadmap: [docs/ARCH
 ## Installation mit Portainer (empfohlen)
 
 GitHub baut bei jeder Änderung fertige Images für Intel/AMD und Raspberry Pi
-(`ghcr.io/sirbuschi2003/netpulse`). Es muss also nichts kompiliert werden.
+(`ghcr.io/thomas-busche/netpulse`). Es muss also nichts kompiliert werden.
 
 1. In Portainer: **Stacks → Add stack**, Name `netpulse`.
 2. Build method **Repository** wählen:
    | Feld | Wert |
    |---|---|
-   | Repository URL | `https://github.com/Sirbuschi2003/NetPulse` |
+   | Repository URL | `https://github.com/Thomas-Busche/NetPulse` |
    | Repository reference | `refs/heads/main` |
    | Compose path | `deploy/portainer-stack.yml` |
 3. Unter **Environment variables** eintragen:
@@ -118,7 +118,7 @@ Mindestens 2 GB RAM.
 
 1. Projekt auf das Gerät holen:
    ```bash
-   git clone https://github.com/Sirbuschi2003/NetPulse.git
+   git clone https://github.com/Thomas-Busche/NetPulse.git
    cd NetPulse
    ```
 2. Konfiguration anlegen:
@@ -268,7 +268,7 @@ sehen nur den verschlüsselten Inhalt. Alternativ ohne Zugriff von außen: VPN (
 - Die Images werden aus diesem Repository gebaut, mit Sigstore signiert und mit Herkunftsangabe (Provenance) und SBOM versehen;
   alle GitHub-Actions sind auf feste Commits gepinnt. Signatur prüfen:
   ```bash
-  cosign verify ghcr.io/sirbuschi2003/netpulse:latest     --certificate-identity-regexp 'https://github.com/Sirbuschi2003/NetPulse/'     --certificate-oidc-issuer https://token.actions.githubusercontent.com
+  cosign verify ghcr.io/thomas-busche/netpulse:latest     --certificate-identity-regexp 'https://github.com/Thomas-Busche/NetPulse/'     --certificate-oidc-issuer https://token.actions.githubusercontent.com
   ```
 
 ## Backup
