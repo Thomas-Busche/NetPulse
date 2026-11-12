@@ -5,7 +5,8 @@
 #   Repository reference: refs/heads/main
 #   Compose path:      deploy/portainer-stack.yml
 # Umgebungsvariablen (unten im Formular):
-#   DB_PASSWORD, SITE_ADDRESS, INITIAL_ADMIN_PASSWORD (SCAN_NETWORKS optional – leer = eigenes Netz automatisch erkennen)
+#   DB_PASSWORD, SITE_ADDRESS (SCAN_NETWORKS optional – leer = eigenes Netz automatisch erkennen)
+# Erste Anmeldung: admin / NetPulse-Admin – danach muss ein eigenes Passwort gesetzt werden.
 # Details: siehe README, Abschnitt „Installation mit Portainer“.
 
 services:

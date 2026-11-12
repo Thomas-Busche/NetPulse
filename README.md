@@ -89,14 +89,13 @@ GitHub baut bei jeder Änderung fertige Images für Intel/AMD und Raspberry Pi
    | `DB_PASSWORD` | `a8f3…` (lang, zufällig) | nur Buchstaben und Ziffern, z. B. von `openssl rand -hex 24` |
    | `SITE_ADDRESS` | `https://192.168.1.10:8443` | IP deines NAS/Pi und Port |
    | `SCAN_NETWORKS` | leer | leer = eigenes Netz automatisch erkennen; sonst z. B. `192.168.1.0/24` |
-   | `INITIAL_ADMIN_PASSWORD` | mind. 12 Zeichen | nach dem ersten Login ändern; **kein `$`** (Compose wertet es aus), keine Leerzeichen am Anfang/Ende |
-4. **Deploy the stack**. Nach etwa einer Minute ist NetPulse unter `SITE_ADDRESS` erreichbar
-   (Benutzer `admin`).
+4. **Deploy the stack**. Nach etwa einer Minute ist NetPulse unter `SITE_ADDRESS` erreichbar.
+5. **Anmelden** mit Benutzer `admin` und Passwort `NetPulse-Admin`. Danach verlangt NetPulse sofort ein
+   eigenes Passwort (mind. 12 Zeichen) – vorher ist nichts anderes erreichbar.
 
-**Anmeldung klappt nicht?** Log von `netpulse-app` ansehen: Dort steht, ob der Admin mit deinem Passwort angelegt
-wurde (inkl. Länge – passt sie nicht, hat Compose Zeichen wie `$` verschluckt) oder ob ein zufälliges Passwort vergeben
-wurde. Das Startpasswort gilt nur für eine leere Datenbank. Notfall: Container `netpulse-app` → *Console* →
-`netpulse reset-password admin`.
+**Anmeldung klappt nicht?** Das Standardkennwort gilt nur bei einer leeren Datenbank (neues Volume). Notfall:
+Container `netpulse-app` → *Console* → `netpulse reset-password admin` (zeigt ein neues Kennwort, das nach der
+Anmeldung ebenfalls geändert werden muss).
 
 **Updates:** Stack öffnen → **Pull and redeploy** und dabei *Re-pull image* aktivieren.
 Wer es automatisch mag, schaltet im Stack **GitOps updates** ein.
@@ -138,11 +137,7 @@ Mindestens 2 GB RAM.
    Der erste Build auf einem Raspberry Pi dauert 15–30 Minuten. Schneller geht es, wenn du das Image
    auf dem PC baust (siehe unten).
 4. Im Browser `SITE_ADDRESS` öffnen, z. B. `https://192.168.1.10:8443`.
-   Wenn du kein `INITIAL_ADMIN_PASSWORD` gesetzt hast, steht das erzeugte Passwort im Log:
-   ```bash
-   docker compose logs app | grep Passwort
-   ```
-   Nach dem ersten Login bitte unter **Mein Konto** ein eigenes Passwort setzen.
+   Anmelden mit `admin` / `NetPulse-Admin` – danach muss sofort ein eigenes Passwort gesetzt werden.
 
 ### Image auf dem PC für den Raspberry Pi bauen
 
@@ -226,7 +221,7 @@ sehen nur den verschlüsselten Inhalt. Alternativ ohne Zugriff von außen: VPN (
 | `DB_PASSWORD` | – (Pflicht) | Passwort der Datenbank; nur Buchstaben und Ziffern |
 | `SITE_ADDRESS` | `https://localhost:8443` | Adresse der Weboberfläche |
 | `SCAN_NETWORKS` | `auto` | Netze beim ersten Start, z. B. `192.168.1.0/24,10.0.10.0/24`; leer/`auto` = angeschlossene Netze automatisch erkennen (mit anderen Netzen kombinierbar: `auto,10.0.10.0/24`), `off` = keine |
-| `INITIAL_ADMIN_USER` / `_PASSWORD` | `admin` / zufällig | Erstes Admin-Konto |
+| `INITIAL_ADMIN_USER` / `_PASSWORD` | `admin` / `NetPulse-Admin` | Erstes Admin-Konto (optional; ohne Passwort-Variable muss es nach der ersten Anmeldung geändert werden) |
 | `DISCOVERY_INTERVAL_MIN` | 15 | Vorgabe für den Modus „regelmäßig“; der Such-Zeitplan selbst wird unter **Netzwerke** eingestellt (Standard: täglich 03:00, kein Scan beim Neustart) |
 | `PROXY_LISTEN` | http://127.0.0.1:18081 | Eingang für einen vorgeschalteten Reverse-Proxy (z. B. `http://:18081` für Nginx Proxy Manager) |
 | `SYSLOG_PORT` | 5514 | Syslog-Empfang (UDP), 0 = aus |

@@ -248,7 +248,7 @@ async fn reset_password_cli(db: &PgPool, args: &[String]) -> Result<()> {
     let password = auth::random_token(12);
     let hash = auth::hash_password(password.clone()).await?;
     let updated = sqlx::query(
-        "UPDATE users SET password_hash = $2,
+        "UPDATE users SET password_hash = $2, must_change_password = true,
                 totp_enabled = CASE WHEN $3 THEN false ELSE totp_enabled END,
                 totp_secret = CASE WHEN $3 THEN NULL ELSE totp_secret END,
                 totp_last_step = CASE WHEN $3 THEN NULL ELSE totp_last_step END
@@ -268,7 +268,7 @@ async fn reset_password_cli(db: &PgPool, args: &[String]) -> Result<()> {
     if reset_2fa {
         eprintln!("Zwei-Faktor-Anmeldung wurde zurückgesetzt – bitte nach der Anmeldung neu einrichten.");
     }
-    eprintln!("Bitte nach der Anmeldung unter „Mein Konto“ ein eigenes Passwort setzen.");
+    eprintln!("Nach der Anmeldung muss unter „Mein Konto“ ein eigenes Passwort gesetzt werden.");
     Ok(())
 }
 
@@ -280,24 +280,27 @@ async fn bootstrap(db: &PgPool, config: &Config) -> Result<()> {
             .clone()
             .unwrap_or_else(|| "admin".into())
             .to_lowercase();
-        // Ein ungültiges Startpasswort soll die App nicht lahmlegen (Neustart-Schleife ohne Anmeldung):
-        // stattdessen ein zufälliges Passwort vergeben und im Container-Log klar sagen, warum.
-        let (password, generated) = match &config.initial_admin_password {
+        // Ohne (gültiges) INITIAL_ADMIN_PASSWORD gilt das Standardkennwort aus dem Handbuch;
+        // es muss nach der ersten Anmeldung geändert werden.
+        let (password, is_default) = match &config.initial_admin_password {
             Some(p) => match auth::validate_password(p) {
                 Ok(()) => (p.clone(), false),
                 Err(e) => {
-                    eprintln!("INITIAL_ADMIN_PASSWORD wird nicht verwendet: {e} – stattdessen zufälliges Passwort (siehe nächste Zeile).");
-                    (auth::random_token(12), true)
+                    tracing::warn!("INITIAL_ADMIN_PASSWORD wird nicht verwendet: {e} – es gilt das Standardkennwort");
+                    (auth::DEFAULT_ADMIN_PASSWORD.to_string(), true)
                 }
             },
-            None => (auth::random_token(12), true),
+            None => (auth::DEFAULT_ADMIN_PASSWORD.to_string(), true),
         };
         let hash = auth::hash_password(password.clone()).await?;
-        let (user_id,): (i64,) = sqlx::query_as("INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id")
-            .bind(&username)
-            .bind(hash)
-            .fetch_one(db)
-            .await?;
+        let (user_id,): (i64,) = sqlx::query_as(
+            "INSERT INTO users (username, password_hash, must_change_password) VALUES ($1, $2, $3) RETURNING id",
+        )
+        .bind(&username)
+        .bind(hash)
+        .bind(is_default)
+        .fetch_one(db)
+        .await?;
         sqlx::query(
             "INSERT INTO role_assignments (role_id, user_id, site_id)
              SELECT id, $1, NULL FROM roles WHERE all_permissions ORDER BY id LIMIT 1",
@@ -305,9 +308,10 @@ async fn bootstrap(db: &PgPool, config: &Config) -> Result<()> {
         .bind(user_id)
         .execute(db)
         .await?;
-        if generated {
-            // Bewusst nur auf die Konsole (Container-Log), nicht ins System-Log der Oberfläche
-            eprintln!("Erster Admin angelegt – Benutzer: '{username}', Passwort: '{password}'. Bitte sofort ändern!");
+        if is_default {
+            tracing::info!(
+                "Erster Admin '{username}' mit dem Standardkennwort angelegt (siehe Handbuch) – wird nach der ersten Anmeldung geändert"
+            );
         } else {
             tracing::info!(
                 "Erster Admin '{username}' mit dem Passwort aus INITIAL_ADMIN_PASSWORD angelegt ({} Zeichen)",

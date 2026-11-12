@@ -16,6 +16,7 @@ pub enum ApiError {
     TooManyRequests,
     /// 2FA ist Pflicht, aber für diesen Benutzer noch nicht eingerichtet
     TotpSetupRequired,
+    PasswordChangeRequired,
     /// Kritische Aktion: Passwort (und ggf. Code) muss kurz vorher erneut bestätigt worden sein
     ReauthRequired,
     /// Interne Fehler werden geloggt, der Browser bekommt aber keine Details zu sehen.
@@ -30,6 +31,13 @@ impl IntoResponse for ApiError {
             let body = json!({
                 "error": "Zwei-Faktor-Anmeldung ist Pflicht – bitte zuerst unter „Mein Konto“ einrichten",
                 "totp_setup_required": true,
+            });
+            return (StatusCode::FORBIDDEN, Json(body)).into_response();
+        }
+        if matches!(self, ApiError::PasswordChangeRequired) {
+            let body = json!({
+                "error": "Bitte zuerst unter „Mein Konto“ ein eigenes Passwort setzen",
+                "password_change_required": true,
             });
             return (StatusCode::FORBIDDEN, Json(body)).into_response();
         }
@@ -52,7 +60,7 @@ impl IntoResponse for ApiError {
                 StatusCode::TOO_MANY_REQUESTS,
                 "Zu viele Fehlversuche – bitte in einigen Minuten erneut versuchen".into(),
             ),
-            ApiError::TotpSetupRequired | ApiError::ReauthRequired => unreachable!(),
+            ApiError::TotpSetupRequired | ApiError::PasswordChangeRequired | ApiError::ReauthRequired => unreachable!(),
             ApiError::Internal(e) => {
                 tracing::error!("{e:#}");
                 (StatusCode::INTERNAL_SERVER_ERROR, "Interner Fehler".into())

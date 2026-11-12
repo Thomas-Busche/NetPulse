@@ -1312,6 +1312,8 @@ async function renderPush() {
 
 async function viewAccount() {
   view().innerHTML = `
+    ${state.user.password_change_required ? `<div class="notice warn">${icon('lock')}<span><b>Bitte jetzt ein eigenes Passwort setzen.</b>
+      Du bist mit dem Standard- oder Notfall-Kennwort angemeldet – nach der Änderung ist NetPulse vollständig nutzbar.</span></div>` : ''}
     ${state.user.totp_setup_required ? `<div class="notice warn">${icon('shield-lock')}<span><b>Zwei-Faktor-Anmeldung ist Pflicht.</b>
       Bitte jetzt unten einrichten – danach ist NetPulse wieder vollständig nutzbar.</span></div>` : ''}
     <div class="grid">
@@ -1350,6 +1352,12 @@ async function viewAccount() {
     attempt(async () => {
       await api('/me/password', { method: 'POST', body: { old_password: f.get('old'), new_password: f.get('new') } });
       ev.target.reset();
+      if (state.user.password_change_required) {
+        // Sperre aufheben: App mit vollem Zugriff neu starten (ggf. greift danach noch die 2FA-Pflicht)
+        state.user = await api('/me');
+        startApp();
+        if (!state.user.totp_setup_required) location.hash = '#/dashboard';
+      }
     }, 'Passwort geändert');
   });
 }
