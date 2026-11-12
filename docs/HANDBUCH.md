@@ -132,8 +132,8 @@ Fertige Images für Intel/AMD und ARM (Raspberry Pi) baut GitHub bei jeder Ände
    | Name | Beispiel | Bedeutung |
    |---|---|---|
    | `DB_PASSWORD` | `8f3a…` (lang, zufällig) | Passwort der Datenbank – nur Buchstaben und Ziffern, z. B. aus `openssl rand -hex 24` |
-   | `SITE_ADDRESS` | `https://192.168.178.10:8443` | Adresse, unter der du NetPulse im LAN öffnest (IP des Hosts + Port) |
-   | `SCAN_NETWORKS` | `192.168.178.0/24` | Netze, die beim ersten Start freigegeben werden (später in der Oberfläche änderbar) |
+   | `SITE_ADDRESS` | `https://192.168.1.10:8443` | Adresse, unter der du NetPulse im LAN öffnest (IP des Hosts + Port) |
+   | `SCAN_NETWORKS` | leer | Netze, die beim ersten Start freigegeben werden (später in der Oberfläche änderbar). Leer = das Netz des Hosts samt Router automatisch erkennen |
    | `INITIAL_ADMIN_PASSWORD` | mind. 12 Zeichen | Passwort des ersten Admins `admin` |
 
    Alle weiteren Variablen stehen im [Anhang](#29-anhang-umgebungsvariablen-ports-aufbewahrung).
@@ -144,7 +144,7 @@ Fertige Images für Intel/AMD und ARM (Raspberry Pi) baut GitHub bei jeder Ände
 ```bash
 git clone https://github.com/Sirbuschi2003/NetPulse.git
 cd NetPulse
-cp .env.example .env        # DB_PASSWORD, SITE_ADDRESS, SCAN_NETWORKS eintragen
+cp .env.example .env        # DB_PASSWORD und SITE_ADDRESS eintragen (SCAN_NETWORKS optional)
 docker compose up -d
 ```
 
@@ -179,13 +179,30 @@ Port in `SITE_ADDRESS`.
 
 ## 4. Erste Schritte
 
+Nach der ersten Anmeldung startet bei einer neuen Installation automatisch der **Einrichtungs-Assistent**
+(*Verwaltung → Einrichtung*, jederzeit erneut aufrufbar). Er führt in fünf Schritten durch das Wichtigste; jeder
+Schritt lässt sich überspringen:
+
+| Schritt | Was passiert |
+|---|---|
+| **Netz kennenlernen** | NetPulse zeigt die Netze, in denen es selbst eine Adresse hat, samt Router (Gateway). Häkchen setzen, übernehmen – der Scan startet sofort, der Fortschritt läuft live mit. Weitere Netze (z. B. IoT-VLAN) lassen sich direkt ergänzen. |
+| **Router erkennen** | Für jedes Gateway: welcher Router es ist (über 30 Router-Familien von FRITZ!Box, Speedport, Vodafone Station, UniFi, OpenWrt, ASUS, TP-Link bis Cisco, FortiGate, Sophos, LANCOM, DrayTek …) und welche Zugangsart passt, mit kurzer Anleitung. Stimmt die Erkennung nicht, den Router aus der Liste wählen. Unbekannte Router laufen als „Anderer Router“ (SNMP oder SSH). |
+| **Zugangsdaten** (optional) | Zugang für den Router eintragen – die passende Art ist vorausgewählt. NetPulse testet die Anmeldung sofort und ordnet sie bei Erfolg dem Router zu; fehlgeschlagene Zugangsdaten lassen sich direkt verwerfen. Router ohne Schnittstelle (z. B. Speedport) werden ohne Zugang überwacht. |
+| **Benachrichtigung** (optional) | Einen Kanal anlegen (ntfy, E-Mail, Telegram, Discord, Teams, Gotify, Webhook) – NetPulse schickt gleich eine Testnachricht. |
+| **Fertig** | Übersicht: Netze, Geräte nach Typ, Router, Zugangsdaten und Kanäle. |
+
+Bestehende Installationen (mit bereits gefundenen Geräten) sehen den Assistenten nicht automatisch.
+
+Von Hand geht es so:
+
 1. **Anmelden** mit Benutzer `admin` und dem Passwort aus der Installation.
 2. **Eigenes Passwort setzen:** *Mein Konto → Passwort ändern* (mind. 12 Zeichen).
 3. **Zwei-Faktor-Anmeldung einrichten:** *Mein Konto → Zwei-Faktor-Anmeldung → Einrichten*, QR-Code mit einer
    Authenticator-App scannen (Google/Microsoft Authenticator, Aegis, 2FAS, Bitwarden …), Code eingeben.
    **Pflicht, bevor NetPulse aus dem Internet erreichbar ist.**
-4. **Netze prüfen:** *Netzwerke* – die Netze aus `SCAN_NETWORKS` sind freigegeben und werden gleich gescannt.
-   Weitere Netze (z. B. IoT-VLAN) hier hinzufügen.
+4. **Netze prüfen:** *Netzwerke* – die Netze aus `SCAN_NETWORKS` (bzw. bei leerem Wert die automatisch erkannten
+   Netze des Hosts) sind freigegeben und werden gleich gescannt. Weitere Netze (z. B. IoT-VLAN) hier hinzufügen oder
+   über **Netze erkennen** vorschlagen lassen.
 5. **Geräte ansehen:** *Geräte* – nach dem ersten Scan erscheinen alle gefundenen Geräte mit Typ, Hersteller und Status.
    Fehlt ein Gerät (z. B. in einem anderen Netz oder hinter einem VPN): **„Gerät hinzufügen“**.
 6. **Zugangsdaten anlegen** für mehr Details: *Zugangsdaten → Hinzufügen*, z. B. SNMP v3 für Switches, SSH-Schlüssel
@@ -355,11 +372,21 @@ Abfrage sofort) und „Alle Geräte“. Welche Reiter erscheinen, hängt davon a
 
 **Netzwerke** (nur Admin):
 
-- **Freigegebene Netze:** Nur diese Netze werden nach Geräten durchsucht (CIDR-Schreibweise, z. B. `192.168.178.0/24`,
+- **Freigegebene Netze:** Nur diese Netze werden nach Geräten durchsucht (CIDR-Schreibweise, z. B. `192.168.1.0/24`,
   höchstens `/16` je Eintrag). Pro Netz: Anzahl Geräte, letzter Scan, **Jetzt scannen**, **Entfernen** (gefundene
   Geräte bleiben erhalten).
 - **Netz hinzufügen:** CIDR und Name – das neue Netz wird sofort gescannt.
+- **Netze erkennen:** schlägt die Netze vor, in denen NetPulse selbst eine Adresse hat – mit dem Router aus der
+  Routing-Tabelle als Gateway. Für einen Sektor mit Probe kommen die Vorschläge von der Probe vor Ort. Docker-, VPN-
+  und VM-Netze werden übersprungen; ein größeres Netz als `/16` wird auf das `/24` um die eigene Adresse begrenzt.
+  **Übernehmen** trägt das Netz ein und scannt es sofort.
 - **Alle scannen:** startet einen vollständigen Suchlauf.
+
+> **Jedes Netz, jeder Router:** NetPulse braucht kein Wissen über Adressbereich oder Router-Hersteller. Das Gerät,
+> das als Gateway eines Netzes eingetragen bzw. erkannt ist, gilt automatisch als Router – auch ohne bekannten
+> Hersteller oder Namen. Für mehr Details (verbundene Geräte, WLAN, Datenraten) einen passenden Zugang hinterlegen:
+> FRITZ!Box, OPNsense, MikroTik oder UniFi über ihre API, alle anderen Router (OpenWrt, pfSense, DrayTek, LANCOM,
+> Cisco, Provider-Router mit SNMP …) über SNMP oder SSH.
 
 **Such-Zeitplan:**
 
@@ -1137,8 +1164,8 @@ Frist automatisch gelöscht.
 | Variable | Standard | Bedeutung |
 |---|---|---|
 | `DB_PASSWORD` | – (Pflicht) | Passwort der Datenbank (nur Buchstaben und Ziffern) |
-| `SITE_ADDRESS` | – (Pflicht) | Adresse der Weboberfläche im LAN, z. B. `https://192.168.178.10:8443` |
-| `SCAN_NETWORKS` | – | Netze beim ersten Start (Komma-getrennt) |
+| `SITE_ADDRESS` | – (Pflicht) | Adresse der Weboberfläche im LAN, z. B. `https://192.168.1.10:8443` |
+| `SCAN_NETWORKS` | `auto` | Netze beim ersten Start (Komma-getrennt); leer/`auto` = angeschlossene Netze automatisch erkennen, kombinierbar (`auto,10.0.10.0/24`), `off` = keine |
 | `INITIAL_ADMIN_USER` / `INITIAL_ADMIN_PASSWORD` | `admin` / zufällig | erstes Admin-Konto (nur beim allerersten Start) |
 | `PUBLIC_URL` | = `SITE_ADDRESS` | Adresse für Links in Benachrichtigungen und für Push (z. B. `https://monitoring.example.de`) |
 | `PROXY_LISTEN` | `http://127.0.0.1:18081` | Eingang für einen vorgeschalteten Reverse-Proxy (NPM) |
@@ -1204,7 +1231,7 @@ NetPulse selbst verbindet sich zu den Geräten über: ICMP (Ping), TCP (Ports), 
 | Begriff | Erklärung |
 |---|---|
 | Agentenlos | auf den überwachten Geräten wird nichts installiert |
-| CIDR | Schreibweise für Netze, z. B. `192.168.178.0/24` = 192.168.178.0–255 |
+| CIDR | Schreibweise für Netze, z. B. `192.168.1.0/24` = 192.168.1.0–255 |
 | SNMP | Standard-Protokoll, über das Netzwerkgeräte Werte bereitstellen |
 | MIB | Beschreibung, welche Werte ein Gerät per SNMP liefert |
 | Syslog / Trap | Meldungen, die Geräte von sich aus an einen Empfänger schicken |

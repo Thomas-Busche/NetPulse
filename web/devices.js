@@ -1231,7 +1231,7 @@ async function viewDevice(id) {
 
 const CHECK_KINDS = {
   http: { label: 'Webseite / HTTP(S)', icon: 'world-www', target: 'URL', placeholder: 'https://monitoring.example.de' },
-  tcp: { label: 'Port (TCP)', icon: 'plug-connected', target: 'Host:Port', placeholder: '192.168.178.10:22' },
+  tcp: { label: 'Port (TCP)', icon: 'plug-connected', target: 'Host:Port', placeholder: '192.168.1.10:22' },
   dns: { label: 'DNS-Auflösung', icon: 'world', target: 'Name', placeholder: 'example.de' },
   tls: { label: 'TLS-Zertifikat', icon: 'shield-lock', target: 'Host:Port', placeholder: 'mail.example.de:993' },
 };
@@ -1324,7 +1324,7 @@ async function viewChecks() {
         <label class="inline"><input type="checkbox" name="check_cert"${cfg.check_cert === false ? '' : ' checked'}> Bei HTTPS auch das Zertifikat überwachen</label>
       </div>
       <div data-k="dns" class="form"><div class="form-row">
-        <label>DNS-Server (optional)<input name="server" value="${esc(cfg.server || '')}" placeholder="leer = System, z. B. 192.168.178.1"></label>
+        <label>DNS-Server (optional)<input name="server" value="${esc(cfg.server || '')}" placeholder="leer = System, z. B. 192.168.1.1"></label>
         <label>Eintrag<select name="record"><option value="A">A (IPv4)</option><option value="AAAA"${cfg.record === 'AAAA' ? ' selected' : ''}>AAAA (IPv6)</option></select></label></div>
         <label>Erwartete Adresse (optional)<input name="expect" value="${esc(cfg.expect || '')}" placeholder="z. B. 203.0.113.10"></label></div>
       <div data-k="http tls" class="form"><div class="form-row">

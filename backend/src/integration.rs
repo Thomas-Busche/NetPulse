@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn zuordnung() {
         let checks = vec![
-            check(1, "Nextcloud", "http", "https://cloud.buschehome.de"),
+            check(1, "Nextcloud", "http", "https://cloud.example.org"),
             check(2, "Immich Fotos", "http", "http://10.10.10.15:2283"),
             check(3, "Home Assistant", "http", "http://10.10.10.20:8123"),
             check(4, "Webseite", "http", "https://www.example.de"),

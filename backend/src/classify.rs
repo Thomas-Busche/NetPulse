@@ -22,14 +22,22 @@ pub struct Hints<'a> {
     pub inventory: Option<&'a Value>,
     /// Modellbezeichnung (z. B. aus dem UniFi-Controller)
     pub model: Option<&'a str>,
+    /// Die Adresse ist Gateway eines Netzes (eingetragen oder aus der Routing-Tabelle erkannt)
+    pub gateway: bool,
 }
 
 pub fn classify(h: &Hints) -> &'static str {
-    from_inventory(h)
+    let kind = from_inventory(h)
         .or_else(|| from_model(h))
         .or_else(|| from_hostname(h))
         .or_else(|| from_vendor_and_ports(h))
-        .unwrap_or("unknown")
+        .unwrap_or("unknown");
+    // Das Gateway eines Netzes ist – egal von welchem Hersteller – dessen Router. Nur eine erkannte
+    // Firewall (OPNsense, pfSense, Fortinet …) bleibt die genauere Angabe.
+    if h.gateway && !matches!(kind, "router" | "firewall") {
+        return "router";
+    }
+    kind
 }
 
 fn has(h: &Hints, port: i32) -> bool {
@@ -122,7 +130,12 @@ fn from_model(h: &Hints) -> Option<&'static str> {
 fn from_hostname(h: &Hints) -> Option<&'static str> {
     let name = h.hostname?.to_lowercase();
     let first = name.split('.').next().unwrap_or(&name);
-    if name.ends_with("fritz.box") && first == "fritz" {
+    // Typische Namen, unter denen Provider-Router sich im eigenen Netz melden
+    // (FRITZ!Box, Speedport, EasyBox, o2 HomeBox, NETGEAR, ASUS, OpenWrt …)
+    if (name.ends_with("fritz.box") && first == "fritz")
+        || matches!(first, "speedport" | "easy" | "easybox" | "o2" | "homebox" | "routerlogin" | "openwrt" | "dsldevice" | "gateway")
+            && name.contains('.')
+    {
         return Some("router");
     }
     let rules: &[(&[&str], &str)] = &[
@@ -134,7 +147,8 @@ fn from_hostname(h: &Hints) -> Option<&'static str> {
         (&["diskstation", "rackstation", "synology", "qnap", "truenas", "-nas", "nas-"], "nas"),
         (&["raspberrypi", "raspberry", "rpi"], "raspberry_pi"),
         (&["proxmox", "pve", "esxi"], "hypervisor"),
-        (&["fritz", "router", "gateway", "edgerouter", "unifi-gateway"], "router"),
+        (&["opnsense", "pfsense"], "firewall"),
+        (&["fritz", "router", "gateway", "edgerouter", "unifi-gateway", "speedport", "easybox", "openwrt"], "router"),
         (&["switch", "usw-"], "switch"),
         (&["uap-", "u6-", "access-point", "-ap-"], "access_point"),
         (&["kamera", "camera", "-cam", "cam-", "ipcam"], "camera"),
@@ -172,7 +186,8 @@ fn from_vendor_and_ports(h: &Hints) -> Option<&'static str> {
     if v(&["avm audiovisuelles", "avm gmbh"]) || vendor == "avm" {
         return Some("router");
     }
-    if v(&["mikrotik", "routerboard", "draytek", "lancom"]) {
+    // Typische Hersteller von Provider-Routern (Kabel, DSL, Glasfaser) und kleinen Routern
+    if v(&["mikrotik", "routerboard", "draytek", "lancom", "sagemcom", "technicolor", "arcadyan", "sercomm", "compal broadband", "askey", "zyxel communications", "gl technologies", "teltonika", "peplink"]) {
         return Some("router");
     }
     if v(&["ubiquiti"]) {
@@ -230,7 +245,7 @@ mod tests {
     use serde_json::json;
 
     fn hints<'a>(ip: &'a str, ports: &'a [i32], host: Option<&'a str>, vendor: Option<&'a str>) -> Hints<'a> {
-        Hints { ip, open_ports: ports, hostname: host, vendor, random_mac: false, inventory: None, model: None }
+        Hints { ip, open_ports: ports, hostname: host, vendor, random_mac: false, inventory: None, model: None, gateway: false }
     }
 
     #[test]
@@ -243,6 +258,29 @@ mod tests {
         assert_eq!(classify(&hints("10.0.0.40", &[8006, 22], None, None)), "hypervisor");
         assert_eq!(classify(&hints("10.0.0.50", &[], Some("iPhone-von-Anna"), None)), "phone");
         assert_eq!(classify(&hints("10.0.0.60", &[], None, None)), "unknown");
+    }
+
+    #[test]
+    fn gateway_ist_router_egal_welcher_hersteller() {
+        // Unbekannter Provider-Router ohne sprechenden Namen
+        let h = Hints { gateway: true, ..hints("172.16.4.1", &[53, 80], None, Some("Shenzhen Something")) };
+        assert_eq!(classify(&h), "router");
+        // UniFi-Gateway würde nach Hersteller sonst als Access Point gelten
+        let h = Hints { gateway: true, ..hints("10.1.0.1", &[22, 443], None, Some("Ubiquiti Inc")) };
+        assert_eq!(classify(&h), "router");
+        // Eine erkannte Firewall bleibt Firewall
+        let h = Hints { gateway: true, ..hints("10.1.0.1", &[443], Some("opnsense.lan"), None) };
+        assert_eq!(classify(&h), "firewall");
+    }
+
+    #[test]
+    fn provider_router_namen() {
+        assert_eq!(classify(&hints("192.168.2.1", &[80], Some("speedport.ip"), None)), "router");
+        assert_eq!(classify(&hints("192.168.2.1", &[80], Some("easy.box"), None)), "router");
+        assert_eq!(classify(&hints("192.168.1.1", &[80], Some("o2.box"), None)), "router");
+        assert_eq!(classify(&hints("192.168.0.1", &[80], None, Some("Sagemcom Broadband SAS"))), "router");
+        // „o2“ ohne Domain ist nur ein Gerätename
+        assert_ne!(classify(&hints("192.168.1.9", &[], Some("o2"), None)), "router");
     }
 
     #[test]

@@ -13,6 +13,7 @@ mod oidc;
 mod probes;
 mod public;
 mod session;
+mod setup;
 mod sites;
 mod stream;
 mod users;
@@ -96,6 +97,8 @@ pub fn router(state: AppState) -> Router {
         .route("/dashboards/{id}", put(dashboard::update_view).delete(dashboard::delete_view))
         // Netze & Scans
         .route("/networks", get(admin::list_networks).post(admin::add_network))
+        .route("/networks/detect", get(admin::detect_networks))
+        .route("/setup", get(setup::overview).put(setup::set_state))
         .route("/networks/{id}", axum::routing::patch(admin::update_network).delete(admin::delete_network))
         .route("/networks/{id}/scan", post(admin::scan_network))
         .route("/probes", get(probes::list).post(probes::create))

@@ -36,7 +36,7 @@ pub const FORMAT: &str = "netpulse-backup";
 /// 2: Sektoren, Rollen, Gruppen, Rechte je Sektor, geteilte Dashboards
 const VERSION: u32 = 2;
 /// Einstellungen, die mitgesichert werden (keine Laufzeit-Zustände wie „letzter Scan“)
-const SETTINGS: &[&str] = &["discovery_schedule", "smtp", "status_page", "security", "energy", "live_settings", "oidc"];
+const SETTINGS: &[&str] = &["discovery_schedule", "smtp", "status_page", "security", "energy", "live_settings", "oidc", "setup"];
 const KDF_M: u32 = 64 * 1024;
 const KDF_T: u32 = 3;
 

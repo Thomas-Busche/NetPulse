@@ -129,7 +129,7 @@ fn validate(kind: &str, target: &str) -> ApiResult<()> {
         return Err(ApiError::BadRequest("URL muss mit http:// oder https:// beginnen".into()));
     }
     if kind == "tcp" && !target.contains(':') {
-        return Err(ApiError::BadRequest("Bitte Host und Port angeben, z. B. 192.168.178.10:22".into()));
+        return Err(ApiError::BadRequest("Bitte Host und Port angeben, z. B. 192.168.1.10:22".into()));
     }
     Ok(())
 }

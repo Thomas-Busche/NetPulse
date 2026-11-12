@@ -24,6 +24,9 @@ installiert** werden. Alles läuft in Docker, z. B. auf einem NAS oder Raspberry
   über OpenID Connect (Entra ID, Keycloak, Authentik …) mit Gruppenabgleich, **API-Schlüssel** für Skripte.
 - **Probes:** ein kleiner NetPulse-Ableger (`netpulse probe`) prüft entfernte Sektoren vor Ort und meldet nur über
   ausgehendes HTTPS – kein VPN, keine Portfreigabe in der Filiale.
+- **Läuft in jedem Netz, mit jedem Router:** erkennt die eigenen Netze samt Gateway selbst; ein
+  **Einrichtungs-Assistent** führt beim ersten Start durch Netz, Router (über 30 Router-Familien mit passender
+  Zugangsart und Anleitung), optionale Zugangsdaten und Benachrichtigung.
 - **Geräteerkennung:** Ping, TCP, ARP, Reverse-DNS, 28 typische Ports, **Hersteller aus der MAC-Adresse**
   (IEEE-Liste mit über 40.000 Einträgen) und **automatische Erkennung des Gerätetyps** (Router, Switch, NAS, Drucker,
   Windows-PC, Smartphone, Kamera, Smart Home …) mit passenden Icons.
@@ -84,8 +87,8 @@ GitHub baut bei jeder Änderung fertige Images für Intel/AMD und Raspberry Pi
    | Name | Beispiel | Hinweis |
    |---|---|---|
    | `DB_PASSWORD` | `a8f3…` (lang, zufällig) | nur Buchstaben und Ziffern, z. B. von `openssl rand -hex 24` |
-   | `SITE_ADDRESS` | `https://192.168.178.10:8443` | IP deines NAS/Pi und Port |
-   | `SCAN_NETWORKS` | `192.168.178.0/24` | dein Heimnetz |
+   | `SITE_ADDRESS` | `https://192.168.1.10:8443` | IP deines NAS/Pi und Port |
+   | `SCAN_NETWORKS` | leer | leer = eigenes Netz automatisch erkennen; sonst z. B. `192.168.1.0/24` |
    | `INITIAL_ADMIN_PASSWORD` | mind. 12 Zeichen | nach dem ersten Login ändern |
 4. **Deploy the stack**. Nach etwa einer Minute ist NetPulse unter `SITE_ADDRESS` erreichbar
    (Benutzer `admin`).
@@ -122,14 +125,14 @@ Mindestens 2 GB RAM.
    ```bash
    cp .env.example .env
    ```
-   In `.env` mindestens `DB_PASSWORD`, `SITE_ADDRESS` und `SCAN_NETWORKS` setzen.
+   In `.env` mindestens `DB_PASSWORD` und `SITE_ADDRESS` setzen. `SCAN_NETWORKS` kann leer bleiben – dann erkennt NetPulse das eigene Netz samt Router selbst.
 3. Starten:
    ```bash
    docker compose up -d --build
    ```
    Der erste Build auf einem Raspberry Pi dauert 15–30 Minuten. Schneller geht es, wenn du das Image
    auf dem PC baust (siehe unten).
-4. Im Browser `SITE_ADDRESS` öffnen, z. B. `https://192.168.178.10:8443`.
+4. Im Browser `SITE_ADDRESS` öffnen, z. B. `https://192.168.1.10:8443`.
    Wenn du kein `INITIAL_ADMIN_PASSWORD` gesetzt hast, steht das erzeugte Passwort im Log:
    ```bash
    docker compose logs app | grep Passwort
@@ -194,7 +197,7 @@ NetPulse unter einer eigenen Adresse mit **gültigem Zertifikat** erreichbar sei
 1. **Vorher Zwei-Faktor-Anmeldung einschalten:** *Mein Konto → Zwei-Faktor-Anmeldung → Einrichten* (für alle Konten).
    Ohne 2FA NetPulse nicht ins Internet stellen.
 2. **Eingang für den Proxy freigeben:** im Portainer-Stack `PROXY_LISTEN=http://<LAN-IP des Hosts>:18081` setzen
-   (z. B. `http://192.168.178.10:18081`) und `PUBLIC_URL=https://monitoring.example.de` (für Links in Nachrichten).
+   (z. B. `http://192.168.1.10:18081`) und `PUBLIC_URL=https://monitoring.example.de` (für Links in Nachrichten).
    Port 18081 ist unverschlüsseltes HTTP: **nie am Router freigeben** – ins Internet geht nur NPM (Port 443).
    Ebenso Syslog (5514) und Traps (1162) nie am Router freigeben.
 3. **In NPM einen Proxy Host anlegen:**
@@ -217,7 +220,7 @@ sehen nur den verschlüsselten Inhalt. Alternativ ohne Zugriff von außen: VPN (
 |---|---|---|
 | `DB_PASSWORD` | – (Pflicht) | Passwort der Datenbank; nur Buchstaben und Ziffern |
 | `SITE_ADDRESS` | `https://localhost:8443` | Adresse der Weboberfläche |
-| `SCAN_NETWORKS` | – | Netze beim ersten Start, z. B. `192.168.178.0/24,10.0.10.0/24` |
+| `SCAN_NETWORKS` | `auto` | Netze beim ersten Start, z. B. `192.168.1.0/24,10.0.10.0/24`; leer/`auto` = angeschlossene Netze automatisch erkennen (mit anderen Netzen kombinierbar: `auto,10.0.10.0/24`), `off` = keine |
 | `INITIAL_ADMIN_USER` / `_PASSWORD` | `admin` / zufällig | Erstes Admin-Konto |
 | `DISCOVERY_INTERVAL_MIN` | 15 | Vorgabe für den Modus „regelmäßig“; der Such-Zeitplan selbst wird unter **Netzwerke** eingestellt (Standard: täglich 03:00, kein Scan beim Neustart) |
 | `PROXY_LISTEN` | http://127.0.0.1:18081 | Eingang für einen vorgeschalteten Reverse-Proxy (z. B. `http://:18081` für Nginx Proxy Manager) |

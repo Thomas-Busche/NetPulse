@@ -95,7 +95,7 @@ services:
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:-https://localhost:8443}
       UPSTREAM: 127.0.0.1:${APP_PORT:-18080}
-      # Eingang für Nginx Proxy Manager o. Ä. – am besten mit LAN-Adresse, z. B. http://192.168.178.10:18081
+      # Eingang für Nginx Proxy Manager o. Ä. – am besten mit LAN-Adresse, z. B. http://192.168.1.10:18081
       # (unverschlüsseltes HTTP: Port nie am Router freigeben). Standard: nur lokal
       PROXY_LISTEN: ${PROXY_LISTEN:-http://127.0.0.1:18081}
     volumes:

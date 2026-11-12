@@ -48,7 +48,7 @@
 
 # Eingang für einen vorgeschalteten Reverse-Proxy mit eigenem Zertifikat (z. B. Nginx Proxy Manager
 # für monitoring.example.de). Standard: nur lokal erreichbar. Zum Freigeben PROXY_LISTEN setzen, am besten
-# auf die LAN-Adresse des Hosts (z. B. http://192.168.178.10:18081) – unverschlüsseltes HTTP, deshalb
+# auf die LAN-Adresse des Hosts (z. B. http://192.168.1.10:18081) – unverschlüsseltes HTTP, deshalb
 # diesen Port nie am Router freigeben und möglichst nur für den Proxy erreichbar machen.
 {$PROXY_LISTEN:http://127.0.0.1:18081} {
 	import netpulse
