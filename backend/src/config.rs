@@ -47,7 +47,15 @@ impl Config {
             database_url: env::var("DATABASE_URL").context("Umgebungsvariable DATABASE_URL fehlt")?,
             listen_addr: string("LISTEN_ADDR", "127.0.0.1:8080"),
             web_dir: string("WEB_DIR", "./web"),
-            cookie_secure: !matches!(optional("COOKIE_SECURE").as_deref(), Some("false" | "0" | "no")),
+            // Ohne Angabe: Secure-Cookie nur, wenn NetPulse nicht über http:// erreicht wird –
+            // sonst verwirft der Browser das Anmelde-Cookie und man landet sofort wieder bei der Anmeldung
+            cookie_secure: match optional("COOKIE_SECURE").as_deref() {
+                Some("false" | "0" | "no") => false,
+                Some(_) => true,
+                None => !optional("SITE_ADDRESS")
+                    .or_else(|| optional("PUBLIC_URL"))
+                    .is_some_and(|u| u.to_ascii_lowercase().starts_with("http://")),
+            },
             session_hours: number("SESSION_HOURS", 12)?,
             discovery_interval: Duration::from_secs(60 * number::<u64>("DISCOVERY_INTERVAL_MIN", 15)?.max(1)),
             monitor_interval: Duration::from_secs(number::<u64>("MONITOR_INTERVAL_SEC", 60)?.max(10)),
