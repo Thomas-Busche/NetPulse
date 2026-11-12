@@ -995,6 +995,61 @@ tr.sev-warning td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
 .ls-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; background: var(--up); }
 .ls-dot.st-red { background: var(--down); } .ls-dot.st-yellow { background: var(--warn); } .ls-dot.st-maintenance { background: var(--info); }
 
+/* Priorität und Kategorien */
+.cat-chip { --cat: #64748b; display: inline-flex; align-items: center; gap: 4px; background: color-mix(in srgb, var(--cat) 16%, var(--surface));
+  color: color-mix(in srgb, var(--cat) 75%, var(--text)); border: 1px solid color-mix(in srgb, var(--cat) 35%, transparent); }
+.cat-chip svg { color: var(--cat); }
+.prio { display: inline-flex; vertical-align: -2px; margin-right: 4px; }
+.prio-high svg { color: var(--warn); fill: var(--warn); }
+.chip.prio-low { margin-left: 6px; color: var(--muted); }
+.dc-tags .chip.prio-low { margin-left: 0; }
+.icon-pick { display: flex; flex-wrap: wrap; gap: 6px; }
+.icon-pick label { flex-direction: row; cursor: pointer; }
+.icon-pick input { position: absolute; opacity: 0; pointer-events: none; }
+.icon-pick label svg { width: 34px; height: 34px; padding: 7px; border-radius: var(--radius-sm); border: 1px solid var(--border); color: var(--text-2); }
+.icon-pick input:checked + svg { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); }
+.icon-pick input:focus-visible + svg { outline: 2px solid var(--accent); }
+.check-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 4px 12px; }
+.stack-h { display: flex; flex-wrap: wrap; gap: 6px 16px; }
+.check-grid + .hint, .stack-h + .hint { margin-top: 8px; }
+#cat-form input[type="color"] { width: 64px; height: 38px; padding: 3px; cursor: pointer; }
+.bulk-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 14px; }
+.bulk-bar > span { flex: 1 1 200px; }
+.dev-card.selected, tr.selected td { outline: 2px solid var(--accent); outline-offset: -2px; }
+.dev-card .dev-pick { width: 18px; height: 18px; flex: none; margin: 0; }
+.danger-text { color: var(--down); }
+
+/* Leitstand: frei angeordnete Blöcke (ganz/halb breit) */
+.ls-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; align-items: start; }
+.ls-block { grid-column: 1 / -1; min-width: 0; }
+.ls-block.half { grid-column: span 1; }
+@media (max-width: 900px) { .ls-block.half { grid-column: 1 / -1; } }
+.ls-grid > .ls-block > .ls-tiles, .ls-grid > .ls-block > .ls-kpis { margin-bottom: 0; }
+.ls-grid.editing .ls-block { outline: 2px dashed var(--border-strong); outline-offset: 2px; cursor: grab; }
+.ls-grid.editing .ls-block.drag-over { outline-color: var(--accent); }
+.ls-block > header .down { color: var(--down); }
+.ls-sub + .ls-sub { margin-top: 14px; }
+.ls-sub h3 { display: flex; align-items: center; gap: 8px; margin: 0 0 8px; font-size: 13px; }
+.ls-devtiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+.ls-devtile { display: grid; grid-template-columns: auto auto 1fr; grid-template-areas: "led icon name" "sub sub sub" "state state state";
+  align-items: center; gap: 4px 8px; padding: 10px 12px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+  background: var(--surface-2); color: var(--text); min-width: 0; }
+.ls-devtile .led { grid-area: led; }
+.ls-devtile .dev-icon { grid-area: icon; }
+.ls-dt-name { grid-area: name; font-weight: 600; min-width: 0; }
+.ls-dt-sub { grid-area: sub; font-size: 12px; color: var(--muted); }
+.ls-dt-state { grid-area: state; font-size: 12px; color: var(--text-2); }
+.ls-devtile.st-down { border-color: var(--down); background: color-mix(in srgb, var(--down-soft) 55%, var(--surface)); }
+.ls-devtile.st-down .ls-dt-state { color: var(--down); font-weight: 600; }
+.ls-devtile.st-off { opacity: 0.6; }
+.ls-devtile.is-high { box-shadow: inset 3px 0 0 var(--warn); }
+.ls-dots { display: flex; flex-wrap: wrap; gap: 6px; }
+.ls-dot-dev { display: inline-flex; align-items: center; gap: 6px; max-width: 220px; padding: 4px 9px; border-radius: 999px;
+  border: 1px solid var(--border); background: var(--surface-2); color: var(--text-2); font-size: 12.5px; }
+.ls-dot-dev.st-down { border-color: var(--down); color: var(--down); font-weight: 600; }
+.ls-dot-dev.is-high { font-weight: 600; }
+body.kiosk .ls-dt-name { font-size: 16px; }
+
 /* Leitstand-Bildschirm (Kiosk) und Vollbild: ohne Menü, größere Schrift */
 body.kiosk .sidebar, body.kiosk .menu-btn, body.kiosk .search, body.kiosk #logout { display: none !important; }
 body.kiosk .shell { grid-template-columns: 1fr; }

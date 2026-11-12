@@ -285,6 +285,22 @@ Der **Leitstand** ist die Übersicht für Bereitschaft und Wandbildschirm:
   quittierte Alarme sind markiert (wer, wann, Kommentar).
 - **Vollbild** und **Sektoren durchschalten** (alle 20 s der nächste Sektor) für Bildschirme in der Leitwarte.
 
+**Leitstand selbst gestalten:** Über **„Gestalten“** wird der Leitstand zum Baukasten. Blöcke:
+
+| Block | Zeigt |
+|---|---|
+| Kennzahlen | kritische Alarme, Warnungen, Geräte offline (unwichtige getrennt gezählt), gestörte Dienste, bestätigte Alarme |
+| Sektor-Ampel | die Ampel-Kacheln je Sektor |
+| Jetzt kaputt | die Störungsliste; optional ohne unwichtige Geräte |
+| Gerätegruppe | Geräte nach **Kategorie**, **Priorität** und Verbindung (WLAN/Kabel) gefiltert – als Kacheln, Liste oder kompakte Ampelpunkte, auf Wunsch nur gestörte Geräte oder nach Kategorie unterteilt |
+
+Jeden Block kann man verschieben (Pfeile oder ziehen), auf halbe oder ganze Breite stellen, einstellen (Zahnrad) und
+entfernen. **„Speichern“** legt eine benannte **Ansicht** an. Wer Einstellungen verwalten darf, kann sie für alle
+freigeben und als **Standard** markieren; sonst bleibt sie privat. Die Auswahlliste oben wechselt zwischen den Ansichten,
+der Browser merkt sich die zuletzt gewählte. Für einen Wandbildschirm die Adresse mit `?view=<Nummer>` verwenden (steht
+nach dem Speichern in der Adresszeile), z. B. `#/leitstand?view=3&rotate=30`. Ohne gespeicherte Ansicht zeigt der
+Leitstand Kennzahlen, Sektor-Ampel, „Wichtige Geräte“ (nur wenn es welche gibt) und „Jetzt kaputt“.
+
 **Kiosk-Modus:** Unter *Mein Konto → API-Schlüssel* einen Schlüssel anlegen und am Bildschirm auf der Anmeldeseite
 **„Als Leitstand-Bildschirm anmelden“** wählen. Die Kiosk-Sitzung kann nur ansehen (auch wenn das Konto mehr dürfte)
 und öffnet direkt den Leitstand.
@@ -327,6 +343,26 @@ offline und doppelte sind vorausgewählt, **„Ausgewählte löschen“** entfer
   unter *Einstellungen* von Hand setzen – „(manuell)“ bleibt dann fest.
 - Der **angezeigte Name** ist in dieser Reihenfolge: eigener Name → vom Gerät gemeldeter Name (SNMP, SSH, Shelly, UniFi,
   FRITZ!Box, DHCP) → DNS-Name → IP.
+
+### 7.5 Priorität und Kategorien
+
+Jedes Gerät hat eine **Priorität** und eine **Kategorie** (beim Gerät unter *Einstellungen*):
+
+- **Wichtig:** steht im Leitstand und in „Jetzt kaputt“ oben (★). Ein Ausfall ist eine Stufe schwerer
+  (aus „Warnung“ wird „Kritisch“), sofern die Alarmregel keine feste Schwere hat.
+- **Normal:** Standard.
+- **Unwichtig:** ein Ausfall ist nur ein **Hinweis** und macht die Sektor-Ampel nicht gelb – gut für Handys, Tablets
+  oder Spielkonsolen, die abends weg sind.
+
+**Kategorien** (Server, Netzwerk, Clients, WLAN-Geräte, Smart Home, Drucker …) legt man unter **Verwaltung →
+Kategorien** selbst an: Name, Symbol, Farbe und Reihenfolge. Jede Kategorie kann Gerätetypen **automatisch**
+übernehmen (z. B. NAS, Hypervisor → Server); ein Gerätetyp gehört dabei zu höchstens einer Kategorie. Beim Gerät
+kann man stattdessen eine Kategorie von Hand wählen oder „keine“ – das bleibt dann fest. Wird eine Kategorie gelöscht,
+bekommen ihre Geräte wieder automatisch eine.
+
+**Mehrere Geräte auf einmal:** In der Geräteliste **„Auswählen“** anklicken, Geräte antippen (oder „Alle sichtbaren“
+nach einem Filter) und **„Priorität / Kategorie setzen“**. Die Liste lässt sich außerdem nach Kategorie und Priorität
+filtern. Priorität, Kategorien und Leitstand-Ansichten sind in der Sicherung enthalten.
 
 ---
 

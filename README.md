@@ -17,7 +17,7 @@ installiert** werden. Alles läuft in Docker, z. B. auf einem NAS oder Raspberry
 
 - **Sektoren:** Standorte, Filialen, Gebäude oder abgeschottete Netze als Baum (Firma → Filiale → Etage).
   Netze, Geräte, Dienste, Alarmregeln und Wartungsfenster gehören zu einem Sektor; Rechte gelten je Sektor.
-- **Leitstand:** Ampel je Sektor, Liste „Jetzt kaputt“ (offline, kritisch, quittiert), Vollbild- und **Kiosk-Modus**
+- **Leitstand:** Ampel je Sektor, Liste „Jetzt kaputt“ (offline, kritisch, quittiert), Vollbild- und **Kiosk-Modus**; selbst gestaltbar mit Gerätegruppen nach **Kategorie** und **Priorität** (wichtig/normal/unwichtig)
   für Wandbildschirme (Anmeldung mit API-Schlüssel, nur ansehen), Sektoren automatisch durchschalten.
 - **Benutzer, Gruppen, Rollen:** frei definierbare Rollen aus feinen Rechten (z. B. „Geräte bearbeiten“, „Alarme
   quittieren“), Zuweisung an Benutzer oder Gruppen – für alle Sektoren oder nur einen. **Zentrale Anmeldung (SSO)**

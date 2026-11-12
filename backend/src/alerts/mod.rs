@@ -603,8 +603,13 @@ fn strip_duration(message: &str) -> String {
 
 /// Legt einen offenen Alarm an; `false`, wenn für Regel+Gerät schon einer offen ist.
 async fn open_alert(state: &AppState, rule: &Rule, device_id: Option<i64>, message: &str, value: Option<f32>) -> sqlx::Result<bool> {
+    // Ohne feste Schwere der Regel bestimmt die Priorität des Geräts mit (wichtig = eine Stufe höher, unwichtig = Hinweis)
     let inserted: Option<(i64,)> = sqlx::query_as(
-        "INSERT INTO alerts (rule_id, device_id, message, value, last_notified_at, severity) VALUES ($1, $2, $3, $4, now(), $5)
+        "INSERT INTO alerts (rule_id, device_id, message, value, last_notified_at, severity)
+         VALUES ($1, $2, $3, $4, now(),
+                 CASE WHEN $6 THEN $5 ELSE COALESCE((SELECT CASE d.priority
+                     WHEN 'high' THEN CASE $5 WHEN 'info' THEN 'warning' ELSE 'critical' END
+                     WHEN 'low' THEN 'info' ELSE $5 END FROM devices d WHERE d.id = $2), $5) END)
          ON CONFLICT (rule_id, (COALESCE(device_id, 0)), (COALESCE(check_id, 0))) WHERE resolved_at IS NULL DO NOTHING
          RETURNING id",
     )
@@ -613,6 +618,7 @@ async fn open_alert(state: &AppState, rule: &Rule, device_id: Option<i64>, messa
     .bind(message)
     .bind(value)
     .bind(severity_of(rule))
+    .bind(rule.severity.is_some())
     .fetch_optional(&state.db)
     .await?;
     Ok(inserted.is_some())
@@ -629,6 +635,17 @@ pub fn default_severity(kind: &str) -> &'static str {
 
 fn severity_of(rule: &Rule) -> String {
     rule.severity.clone().unwrap_or_else(|| default_severity(&rule.kind).to_string())
+}
+
+/// Schwere nach Priorität des Geräts: wichtig = eine Stufe höher, unwichtig = nur Hinweis
+pub fn by_priority(severity: Severity, priority: &str) -> Severity {
+    match (priority, severity) {
+        (_, Severity::Resolved) => Severity::Resolved,
+        ("high", Severity::Info) => Severity::Warning,
+        ("high", _) => Severity::Critical,
+        ("low", _) => Severity::Info,
+        _ => severity,
+    }
 }
 
 fn parse_severity(name: &str) -> Severity {
@@ -686,6 +703,13 @@ async fn deliver_to(state: &AppState, rule: &Rule, mut n: Notification, target: 
     // Feste Schwere der Regel (Entwarnungen bleiben Entwarnungen)
     if let (Some(name), false) = (&rule.severity, n.severity == Severity::Resolved) {
         n.severity = parse_severity(name);
+    } else if let (None, Some(device_id), false) = (&rule.severity, n.device_id, n.severity == Severity::Resolved) {
+        // Keine feste Schwere: Priorität des Geräts berücksichtigen
+        if let Ok(Some((priority,))) =
+            sqlx::query_as::<_, (String,)>("SELECT priority FROM devices WHERE id = $1").bind(device_id).fetch_optional(&state.db).await
+        {
+            n.severity = by_priority(n.severity, &priority);
+        }
     }
     // Wartungsfenster: aufzeichnen ja, benachrichtigen nein
     if let Some(window) = crate::maintenance::active_for(&state.db, n.device_id, n.check_id).await {
@@ -747,6 +771,15 @@ async fn deliver_to(state: &AppState, rule: &Rule, mut n: Notification, target: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schwere_nach_prioritaet() {
+        assert_eq!(by_priority(Severity::Warning, "high"), Severity::Critical);
+        assert_eq!(by_priority(Severity::Info, "high"), Severity::Warning);
+        assert_eq!(by_priority(Severity::Critical, "low"), Severity::Info);
+        assert_eq!(by_priority(Severity::Warning, "normal"), Severity::Warning);
+        assert_eq!(by_priority(Severity::Resolved, "high"), Severity::Resolved);
+    }
 
     #[test]
     fn dauer_entfernen() {

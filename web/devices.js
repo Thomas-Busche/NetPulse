@@ -95,9 +95,13 @@ function connSummary(c, compact = false) {
 }
 
 async function viewDevices(_arg, params) {
-  let [devices, uc, pulse] = await Promise.all([api('/devices'), loadUnifiClients(), api('/pulse').catch(() => null), loadSites()]);
+  let [devices, uc, pulse] = await Promise.all([api('/devices'), loadUnifiClients(), api('/pulse').catch(() => null), loadSites(), loadCategories()]);
   const filters = { q: (params.get('q') || '').toLowerCase(), status: params.get('status') || '', type: params.get('type') || '', conn: params.get('conn') || '',
-    site: params.get('site') ? Number(params.get('site')) : null, tag: params.get('tag') || '' };
+    site: params.get('site') ? Number(params.get('site')) : null, tag: params.get('tag') || '',
+    category: params.get('category') || '', priority: params.get('priority') || '' };
+  // Mehrfachauswahl (Priorität/Kategorie für mehrere Geräte setzen)
+  let selecting = false;
+  const selected = new Set();
   // Sektor inkl. Unter-Sektoren
   const siteSet = (id) => { const out = [id]; for (let i = 0; i < out.length; i += 1) sitesCache.list.filter((x) => x.parent_id === out[i]).forEach((x) => { if (!out.includes(x.id)) out.push(x.id); }); return out; };
   const tagsPresent = [...new Set(devices.flatMap((d) => d.tags || []))].sort();
@@ -114,18 +118,24 @@ async function viewDevices(_arg, params) {
         </select>
         <select id="type-filter" aria-label="Gerätetyp"><option value="">Alle Typen</option>
           ${typesPresent.map((t) => `<option value="${esc(t)}">${esc(typeInfo(t).label)}</option>`).join('')}</select>
+        ${catsCache.list.length ? `<select id="cat-filter" aria-label="Kategorie"><option value="">Alle Kategorien</option>${categoryOptions(null)}<option value="-1">Ohne Kategorie</option></select>` : ''}
+        <select id="prio-filter" aria-label="Priorität"><option value="">Alle Prioritäten</option>${priorityOptions('')}</select>
         ${sitesCache.list.length > 1 ? `<select id="site-filter" aria-label="Sektor">${siteOptions(filters.site, { all: 'Alle Sektoren' })}</select>` : ''}
         ${tagsPresent.length ? `<select id="tag-filter" aria-label="Tag"><option value="">Alle Tags</option>${tagsPresent.map((t) => `<option value="${esc(t)}"${t === filters.tag ? ' selected' : ''}>#${esc(t)}</option>`).join('')}</select>` : ''}
         <span id="conn-filter-slot"></span>
       </div>
       <div class="actions"><span class="muted" id="count"></span>
-        ${canAny('devices.manage') ? `<button type="button" id="dev-add">${icon('plus')}Gerät hinzufügen</button>` : ''}
+        ${canAny('devices.manage') ? `<button type="button" class="ghost" id="dev-select" title="Mehrere Geräte auswählen und Priorität/Kategorie setzen">${icon('check')}Auswählen</button>
+          <button type="button" id="dev-add">${icon('plus')}Gerät hinzufügen</button>` : ''}
         <div class="seg"><button type="button" data-mode="cards" title="Karten">${icon('layout-grid')}</button>
         <button type="button" data-mode="table" title="Tabelle">${icon('list')}</button></div></div>
     </div>
     <div id="unifi-hint"></div>
+    <div id="dev-bulk"></div>
     <div id="dev-list"></div>`;
   $('#q').value = filters.q;
+  if ($('#cat-filter')) $('#cat-filter').value = filters.category;
+  $('#prio-filter').value = filters.priority;
   $('#status-filter').value = filters.status;
   $('#type-filter').value = filters.type;
 
@@ -231,6 +241,8 @@ async function viewDevices(_arg, params) {
     if (filters.type && d.device_type !== filters.type) return false;
     if (filters.site && !siteSet(filters.site).includes(d.site_id)) return false;
     if (filters.tag && !(d.tags || []).includes(filters.tag)) return false;
+    if (filters.category && String(d.category_id ?? -1) !== filters.category) return false;
+    if (filters.priority && d.priority !== filters.priority) return false;
     if (filters.conn) {
       const c = uc.byDevice.get(d.id);
       if (!c) return false;
@@ -242,6 +254,7 @@ async function viewDevices(_arg, params) {
     if (!filters.q) return true;
     const c = uc.byDevice.get(d.id) || {};
     const hay = [d.name, d.reported_name, d.hostname, d.ip, d.mac, d.vendor, d.os, d.model, d.notes, typeInfo(d.device_type).label, d.site_name, ...(d.tags || []),
+      (categoryById(d.category_id) || {}).name,
       c.uplink_name, c.ssid, c.network, ...(d.open_ports || []).map(portLabel)].join(' ').toLowerCase();
     return hay.includes(filters.q);
   };
@@ -251,8 +264,8 @@ async function viewDevices(_arg, params) {
     const ports = d.open_ports || [];
     const st = !d.monitored ? 'off' : d.paused ? 'paused' : d.status;
     return `
-    <a class="dev-card st-${esc(st)}" href="#/device/${d.id}">
-      <div class="top">${devIcon(d)}<div class="ellipsis"><div class="name">${esc(deviceLabel(d))}${inventoryWarn(d)}</div>
+    <a class="dev-card st-${esc(st)}${selected.has(d.id) ? ' selected' : ''}" href="#/device/${d.id}" data-dev="${d.id}">
+      <div class="top">${selecting ? `<input type="checkbox" class="dev-pick" data-pick="${d.id}"${selected.has(d.id) ? ' checked' : ''} aria-label="Auswählen">` : ''}${devIcon(d)}<div class="ellipsis"><div class="name">${priorityMark(d)}${esc(deviceLabel(d))}${inventoryWarn(d)}</div>
         <div class="sub mono">${esc(d.ip)}</div></div><span class="led ${esc(st)}" title="${esc(STATUS_LABEL[d.status] || d.status)}"></span></div>
       <div class="dc-facts">
         <span title="MAC-Adresse">${icon('binary-tree', 'i-sm')}<span class="mono">${esc(d.mac || '–')}</span></span>
@@ -267,18 +280,19 @@ async function viewDevices(_arg, params) {
       </div>
       <div class="dc-spark" title="Antwortzeit der letzten 2 Stunden">${spark(p.rtt, { tone: d.status === 'down' ? 'down' : 'accent', min: 0 })}</div>
       <div class="meta">${statusBadge(d)}${liveWatt(d)}${d.flapping ? '<span class="badge warn" title="Wechselt häufig zwischen online und offline">flattert</span>' : ''}<span>${d.has_credentials ? `${icon('key', 'i-sm')} ` : ''}${typeInfo(d.device_type).label}</span></div>
-      ${sitesCache.list.length > 1 || (d.tags || []).length ? `<div class="dc-tags">${sitesCache.list.length > 1 ? `<span class="chip">${icon('building', 'i-sm')}${esc(d.site_name)}</span>` : ''}${(d.tags || []).map((t) => `<span class="chip">#${esc(t)}</span>`).join('')}</div>` : ''}
+      ${sitesCache.list.length > 1 || (d.tags || []).length || categoryById(d.category_id) || d.priority === 'low' ? `<div class="dc-tags">${categoryChip(d)}${priorityChip(d)}${sitesCache.list.length > 1 ? `<span class="chip">${icon('building', 'i-sm')}${esc(d.site_name)}</span>` : ''}${(d.tags || []).map((t) => `<span class="chip">#${esc(t)}</span>`).join('')}</div>` : ''}
     </a>`;
   };
 
   const row = (d) => `
-    <tr class="clickable${d.monitored ? '' : ' unmonitored'}" data-id="${d.id}">
-      <td><div class="cell-dev">${devIcon(d, 'sm')}<div class="ellipsis"><div>${esc(deviceLabel(d))}${inventoryWarn(d)} ${liveWatt(d)}</div>
+    <tr class="clickable${d.monitored ? '' : ' unmonitored'}${selected.has(d.id) ? ' selected' : ''}" data-id="${d.id}">
+      ${selecting ? `<td><input type="checkbox" class="dev-pick" data-pick="${d.id}"${selected.has(d.id) ? ' checked' : ''} aria-label="Auswählen"></td>` : ''}
+      <td><div class="cell-dev">${devIcon(d, 'sm')}<div class="ellipsis"><div>${priorityMark(d)}${esc(deviceLabel(d))}${inventoryWarn(d)} ${liveWatt(d)}${priorityChip(d)}</div>
         ${(d.reported_name || d.hostname) && deviceLabel(d) !== (d.reported_name || d.hostname) ? `<div class="muted small">${esc(d.reported_name || d.hostname)}</div>` : ''}</div></div></td>
       <td>${statusBadge(d)}</td>
       <td class="mono">${esc(d.ip)}${sitesCache.list.length > 1 ? `<div class="muted small">${esc(d.site_name)}</div>` : ''}</td>
       <td><div class="mono small">${esc(d.mac || '–')}</div><div class="muted small">${esc(d.vendor || '')}</div></td>
-      <td class="small">${esc(d.os || typeInfo(d.device_type).label)}</td>
+      <td class="small">${esc(d.os || typeInfo(d.device_type).label)}${categoryById(d.category_id) ? `<div>${categoryChip(d)}</div>` : ''}</td>
       ${hasConn() ? `<td class="small">${connSummary(uc.byDevice.get(d.id))}</td>` : ''}
       <td>${portChips(d.open_ports)}</td>
       <td>${esc(fmtMs(d.last_rtt_ms))}</td>
@@ -287,17 +301,34 @@ async function viewDevices(_arg, params) {
 
   const hasConn = () => uc.byDevice.size > 0;
 
+  const renderBulk = (shown) => {
+    const bar = $('#dev-bulk');
+    if (!selecting) { bar.innerHTML = ''; return; }
+    bar.innerHTML = `<div class="notice info bulk-bar">${icon('check')}<span><b>${selected.size}</b> ausgewählt – Karten oder Zeilen anklicken.</span>
+      <button type="button" class="ghost sm" id="bulk-all">Alle ${esc(shown.length)} sichtbaren</button>
+      <button type="button" class="ghost sm" id="bulk-none">Keine</button>
+      <button type="button" class="sm" id="bulk-edit"${selected.size ? '' : ' disabled'}>${icon('edit', 'i-sm')}Priorität / Kategorie setzen</button></div>`;
+    $('#bulk-all').addEventListener('click', () => { shown.forEach((d) => selected.add(d.id)); render(); });
+    $('#bulk-none').addEventListener('click', () => { selected.clear(); render(); });
+    $('#bulk-edit').addEventListener('click', () => bulkDeviceDialog([...selected], async () => {
+      devices = await api('/devices');
+      await loadCategories(true);
+      render();
+    }));
+  };
+
   const render = () => {
     const shown = devices.filter(matches);
     $$('.seg button').forEach((b) => b.classList.toggle('active', b.dataset.mode === mode));
     $('#count').textContent = `${shown.length} von ${devices.length} Geräten`;
+    renderBulk(shown);
     if (!shown.length) {
       $('#dev-list').innerHTML = `<div class="card">${empty(devices.length ? 'Keine Geräte passen zum Filter.' : 'Noch keine Geräte – unter „Netzwerke“ ein Netz freigeben oder oben „Gerät hinzufügen“.', 'devices')}</div>`;
     } else if (mode === 'cards') {
       $('#dev-list').innerHTML = `<div class="dev-grid">${shown.map(card).join('')}</div>`;
     } else {
       $('#dev-list').innerHTML = `<div class="card table-wrap"><table>
-        <thead><tr><th>Gerät</th><th>Status</th><th>IP</th><th>MAC / Hersteller</th><th>System</th>${hasConn() ? '<th>Verbindung</th>' : ''}<th>Dienste</th><th>Antwort</th><th>Gesehen</th></tr></thead>
+        <thead><tr>${selecting ? `<th><input type="checkbox" id="pick-all" aria-label="Alle sichtbaren auswählen"${shown.length && shown.every((d) => selected.has(d.id)) ? ' checked' : ''}></th>` : ''}<th>Gerät</th><th>Status</th><th>IP</th><th>MAC / Hersteller</th><th>System</th>${hasConn() ? '<th>Verbindung</th>' : ''}<th>Dienste</th><th>Antwort</th><th>Gesehen</th></tr></thead>
         <tbody>${shown.map(row).join('')}</tbody></table></div>`;
     }
   };
@@ -307,10 +338,34 @@ async function viewDevices(_arg, params) {
   $('#type-filter').addEventListener('change', (ev) => { filters.type = ev.target.value; render(); });
   $('#site-filter')?.addEventListener('change', (ev) => { filters.site = ev.target.value ? Number(ev.target.value) : null; render(); });
   $('#tag-filter')?.addEventListener('change', (ev) => { filters.tag = ev.target.value; render(); });
+  $('#cat-filter')?.addEventListener('change', (ev) => { filters.category = ev.target.value; render(); });
+  $('#prio-filter').addEventListener('change', (ev) => { filters.priority = ev.target.value; render(); });
+  $('#dev-select')?.addEventListener('click', () => {
+    selecting = !selecting;
+    selected.clear();
+    $('#dev-select').classList.toggle('active', selecting);
+    render();
+  });
   $$('.seg button').forEach((b) => b.addEventListener('click', () => { mode = b.dataset.mode; writePref('np-dev-view', mode); render(); }));
   $('#dev-add')?.addEventListener('click', addDeviceDialog);
   if (params.get('add') === '1' && canAny('devices.manage')) addDeviceDialog();
   $('#dev-list').addEventListener('click', (ev) => {
+    if (selecting) {
+      // Im Auswahl-Modus schaltet ein Klick die Auswahl um, statt das Gerät zu öffnen
+      if (ev.target.id === 'pick-all') {
+        const shown = devices.filter(matches);
+        shown.forEach((d) => (ev.target.checked ? selected.add(d.id) : selected.delete(d.id)));
+        render();
+        return;
+      }
+      const item = ev.target.closest('[data-dev], tr[data-id]');
+      if (!item) return;
+      ev.preventDefault();
+      const devId = Number(item.dataset.dev || item.dataset.id);
+      if (selected.has(devId)) selected.delete(devId); else selected.add(devId);
+      render();
+      return;
+    }
     const tr = ev.target.closest('tr[data-id]');
     if (tr) location.hash = `#/device/${tr.dataset.id}`;
   });
@@ -389,7 +444,7 @@ async function viewDevice(id) {
   const canDev = (perm) => can(perm, data.device.site_id);
   const credentials = can('credentials.manage') ? await api('/credentials').catch(() => []) : [];
   const allDevices = canDev('devices.manage') ? await api('/devices').catch(() => []) : [];
-  await loadSites();
+  await Promise.all([loadSites(), loadCategories()]);
 
   const tabs = () => {
     const inv = data.inventory || {};
@@ -421,7 +476,8 @@ async function viewDevice(id) {
       <div class="card">
         <div class="dev-hero">${devIcon(d, 'lg')}
           <div class="title"><h1>${esc(deviceLabel(d))} ${statusBadge(d)}</h1>
-            <div class="badges"><span class="badge accent">${esc(t.label)}${d.device_type_manual ? ' (manuell)' : ''}</span>
+            <div class="badges">${d.priority === 'high' ? `<span class="badge sev-critical">${icon('star', 'i-sm')}Wichtig</span>` : d.priority === 'low' ? '<span class="badge plain">Unwichtig</span>' : ''}
+              ${categoryChip(d)}<span class="badge accent">${esc(t.label)}${d.device_type_manual ? ' (manuell)' : ''}</span>
               <span class="badge plain mono">${esc(d.ip)}</span>
               ${d.vendor ? `<span class="badge plain">${esc(d.vendor)}</span>` : ''}
               ${d.os ? `<span class="badge plain">${esc(d.os)}</span>` : ''}
@@ -1154,6 +1210,12 @@ async function viewDevice(id) {
           <option value="auto">Automatisch erkennen${d.device_type_manual ? '' : ` (${esc(typeInfo(d.device_type).label)})`}</option>
           ${Object.entries(TYPES).map(([k, t]) => `<option value="${k}"${d.device_type_manual && d.device_type === k ? ' selected' : ''}>${esc(t.label)}</option>`).join('')}
         </select></label>
+        <div class="form-row"><label>Priorität<select name="priority">${priorityOptions(d.priority)}</select></label>
+          <label>Kategorie<select name="category_id">${categoryOptions(d.category_manual ? (d.category_id ?? -1) : 0, {
+            auto: true, none: true,
+            autoLabel: `Automatisch${!d.category_manual ? ` (${categoryById(d.category_id) ? categoryById(d.category_id).name : 'keine'})` : ' (nach Gerätetyp)'}` })}</select></label></div>
+        <p class="hint">Wichtig: steht im Leitstand oben, ein Ausfall gilt als kritisch. Unwichtig: Ausfall nur als Hinweis, die Sektor-Ampel bleibt grün.
+          ${can('settings.manage') ? '<a href="#/categories">Kategorien verwalten</a>' : ''}</p>
         <label>Notizen<textarea name="notes" maxlength="5000">${esc(d.notes || '')}</textarea></label>
         <div class="form-row"><label>Sektor<select name="site_id">${siteOptions(d.site_id, { perm: 'devices.manage' })}</select></label>
           <label>Tags (mit Komma getrennt)<input name="tags" maxlength="400" value="${esc((d.tags || []).join(', '))}" placeholder="z. B. kasse, kritisch"></label></div>
@@ -1197,6 +1259,7 @@ async function viewDevice(id) {
           method: 'PATCH',
           body: { name: f.get('name'), notes: f.get('notes'), monitored: f.get('monitored') === 'on', device_type: f.get('device_type'), parent_id: Number(f.get('parent_id')),
             site_id: Number(f.get('site_id')), tags: String(f.get('tags') || '').split(',').map((t) => t.trim()).filter(Boolean),
+            priority: f.get('priority'), category_id: Number(f.get('category_id')),
             ...(f.get('energy_role') ? { energy_role: f.get('energy_role') } : {}) },
         });
         render();

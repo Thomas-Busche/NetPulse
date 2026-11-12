@@ -44,7 +44,7 @@ pub async fn load(State(st): State<AppState>, user: CurrentUser) -> ApiResult<Js
         return Ok(Json(layout));
     }
     // Neue Benutzer: Vorlage der Verwaltung, sonst das eingebaute Layout
-    let template: Option<(Value,)> = sqlx::query_as("SELECT layout FROM dashboard_views WHERE is_default ORDER BY updated_at DESC LIMIT 1")
+    let template: Option<(Value,)> = sqlx::query_as("SELECT layout FROM dashboard_views WHERE is_default AND kind = 'dashboard' ORDER BY updated_at DESC LIMIT 1")
         .fetch_optional(&st.db)
         .await?;
     Ok(Json(template.map(|r| r.0).unwrap_or_else(default_layout)))
@@ -200,6 +200,27 @@ pub struct ViewInput {
     pub group_ids: Vec<i64>,
     #[serde(default)]
     pub is_default: bool,
+    /// dashboard (Standard) oder leitstand; nur beim Anlegen, danach fest
+    #[serde(default = "default_kind")]
+    pub kind: String,
+}
+
+fn default_kind() -> String {
+    "dashboard".into()
+}
+
+#[derive(Deserialize, Default)]
+pub struct KindQuery {
+    /// dashboard (Standard) oder leitstand
+    pub kind: Option<String>,
+}
+
+fn check_kind(kind: &str) -> ApiResult<()> {
+    if matches!(kind, "dashboard" | "leitstand") {
+        Ok(())
+    } else {
+        Err(ApiError::BadRequest("Unbekannte Art (dashboard oder leitstand)".into()))
+    }
 }
 
 /// Sichtbar: eigene, für alle geteilte und für eine eigene Gruppe geteilte Dashboards
@@ -208,15 +229,18 @@ const VISIBLE: &str = "(v.owner_id = $1 OR (v.shared AND (cardinality(v.group_id
 
 type ViewRow = (i64, String, Option<i64>, Option<String>, Value, Option<i64>, Option<String>, bool, Vec<i64>, bool);
 
-pub async fn list_views(State(st): State<AppState>, user: Need<perm::View>) -> ApiResult<Json<Value>> {
+pub async fn list_views(State(st): State<AppState>, user: Need<perm::View>, Query(q): Query<KindQuery>) -> ApiResult<Json<Value>> {
+    let kind = q.kind.unwrap_or_else(default_kind);
+    check_kind(&kind)?;
     let rows: Vec<ViewRow> = sqlx::query_as(&format!(
         "SELECT v.id, v.name, v.owner_id, u.username, v.layout, v.site_id, s.name, v.shared, v.group_ids, v.is_default
            FROM dashboard_views v LEFT JOIN users u ON u.id = v.owner_id LEFT JOIN sites s ON s.id = v.site_id
-          WHERE {VISIBLE} OR $2
+          WHERE ({VISIBLE} OR $2) AND v.kind = $3
           ORDER BY v.name"
     ))
     .bind(user.id)
     .bind(user.can("settings.manage"))
+    .bind(&kind)
     .fetch_all(&st.db)
     .await?;
     // Sektor-Dashboards nur zeigen, wenn der Benutzer den Sektor sehen darf
@@ -240,6 +264,7 @@ async fn check_view(st: &AppState, user: &CurrentUser, v: &ViewInput) -> ApiResu
         return Err(ApiError::BadRequest("Name fehlt oder ist zu lang".into()));
     }
     check_layout(&v.layout)?;
+    check_kind(&v.kind)?;
     if let Some(site) = v.site_id {
         user.require_site("view", site)?;
     }
@@ -258,11 +283,11 @@ pub async fn create_view(State(st): State<AppState>, Need(user, _): Need<perm::V
     let name = check_view(&st, &user, &v).await?;
     let mut tx = st.db.begin().await?;
     if v.is_default {
-        sqlx::query("UPDATE dashboard_views SET is_default = false").execute(&mut *tx).await?;
+        sqlx::query("UPDATE dashboard_views SET is_default = false WHERE kind = $1").bind(&v.kind).execute(&mut *tx).await?;
     }
     let (id,): (i64,) = sqlx::query_as(
-        "INSERT INTO dashboard_views (name, owner_id, layout, site_id, shared, group_ids, is_default)
-         VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
+        "INSERT INTO dashboard_views (name, owner_id, layout, site_id, shared, group_ids, is_default, kind)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id",
     )
     .bind(&name)
     .bind(user.id)
@@ -271,10 +296,11 @@ pub async fn create_view(State(st): State<AppState>, Need(user, _): Need<perm::V
     .bind(v.shared)
     .bind(&v.group_ids)
     .bind(v.is_default)
+    .bind(&v.kind)
     .fetch_one(&mut *tx)
     .await?;
     tx.commit().await?;
-    audit::log(&st.db, Some(user.id), Some(&user.username), "dashboard_view_create", json!({ "id": id, "name": name, "shared": v.shared })).await;
+    audit::log(&st.db, Some(user.id), Some(&user.username), "dashboard_view_create", json!({ "id": id, "name": name, "shared": v.shared, "kind": v.kind })).await;
     Ok(Json(json!({ "id": id })))
 }
 
@@ -297,7 +323,11 @@ pub async fn update_view(
     let name = check_view(&st, &user, &v).await?;
     let mut tx = st.db.begin().await?;
     if v.is_default {
-        sqlx::query("UPDATE dashboard_views SET is_default = false WHERE id <> $1").bind(id).execute(&mut *tx).await?;
+        // Nur unter Ansichten derselben Art (Dashboard bzw. Leitstand)
+        sqlx::query("UPDATE dashboard_views SET is_default = false WHERE id <> $1 AND kind = (SELECT kind FROM dashboard_views WHERE id = $1)")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
     }
     sqlx::query(
         "UPDATE dashboard_views SET name = $2, layout = $3, site_id = $4, shared = $5, group_ids = $6, is_default = $7, updated_at = now()

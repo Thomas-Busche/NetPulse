@@ -28,7 +28,11 @@ const DEVICE_COLUMNS: &str = "id, host(ip) AS ip, mac, hostname, name, notes, op
                                 WHERE p.until > now() AND devices.id = ANY(p.device_ids) ORDER BY p.started_at LIMIT 1) AS paused, \
                               site_id, (SELECT s.name FROM sites s WHERE s.id = devices.site_id) AS site_name, tags, \
                               (SELECT count(*) FROM events e WHERE e.device_id = devices.id AND e.kind IN ('up', 'down') \
-                                 AND e.time > now() - interval '1 hour') >= 4 AS flapping";
+                                 AND e.time > now() - interval '1 hour') >= 4 AS flapping, \
+                              priority, category_manual, \
+                              CASE WHEN category_manual THEN category_id ELSE \
+                                (SELECT c.id FROM device_categories c WHERE COALESCE(devices.device_type, 'unknown') = ANY(c.auto_types) \
+                                  ORDER BY c.position, c.id LIMIT 1) END AS category_id";
 
 const EVENT_SELECT: &str = "SELECT e.id, e.time, e.device_id, \
                             COALESCE(d.name, d.reported_name, d.hostname, host(d.ip)) AS device_label, e.kind, e.message \
@@ -73,6 +77,12 @@ pub struct Device {
     tags: Vec<String>,
     /// Status wechselte in der letzten Stunde mindestens viermal
     flapping: bool,
+    /// Wichtigkeit: high (wichtig), normal, low (unwichtig)
+    priority: String,
+    /// Kategorie von Hand gesetzt (sonst automatisch aus dem Gerätetyp)
+    category_manual: bool,
+    /// Wirksame Kategorie (von Hand oder automatisch); None = keine
+    category_id: Option<i64>,
 }
 
 #[derive(Serialize, FromRow)]
@@ -356,6 +366,33 @@ pub struct DeviceUpdate {
     site_id: Option<i64>,
     /// Gerätegruppen (ersetzt die bisherigen)
     tags: Option<Vec<String>>,
+    /// Wichtigkeit: high | normal | low
+    priority: Option<String>,
+    /// Kategorie: 0 = automatisch (aus dem Gerätetyp), -1 = keine, sonst die Kategorie
+    category_id: Option<i64>,
+}
+
+/// Priorität und Kategorie prüfen (gemeinsam für ein Gerät und mehrere auf einmal)
+async fn check_priority_category(db: &sqlx::PgPool, priority: Option<&str>, category: Option<i64>) -> ApiResult<()> {
+    if priority.is_some_and(|p| !matches!(p, "high" | "normal" | "low")) {
+        return Err(ApiError::BadRequest("Unbekannte Priorität (erlaubt: high, normal, low)".into()));
+    }
+    if let Some(cat) = category.filter(|c| *c > 0) {
+        let exists: Option<(i64,)> = sqlx::query_as("SELECT id FROM device_categories WHERE id = $1").bind(cat).fetch_optional(db).await?;
+        if exists.is_none() {
+            return Err(ApiError::BadRequest("Diese Kategorie gibt es nicht (mehr)".into()));
+        }
+    }
+    Ok(())
+}
+
+/// SQL-Teil für Priorität ($a) und Kategorie ($b) in einem UPDATE devices
+fn priority_category_sql(a: u8, b: u8) -> String {
+    format!(
+        "priority = COALESCE(${a}::text, priority),
+         category_manual = CASE WHEN ${b}::bigint IS NULL THEN category_manual ELSE ${b} <> 0 END,
+         category_id = CASE WHEN ${b}::bigint IS NULL THEN category_id WHEN ${b} > 0 THEN ${b} ELSE NULL END"
+    )
 }
 
 /// Tags vereinheitlichen: klein, ohne Leerzeichen am Rand, höchstens 20 Stück à 40 Zeichen
@@ -394,6 +431,7 @@ pub async fn update(
     if req.energy_role.as_deref().is_some_and(|r| !matches!(r, "auto" | "consumer" | "producer" | "grid")) {
         return Err(ApiError::BadRequest("Unbekannte Energie-Rolle".into()));
     }
+    check_priority_category(&st.db, req.priority.as_deref(), req.category_id).await?;
     if let Some(parent) = req.parent_id.filter(|p| *p > 0) {
         // Kein Kreis: das neue Elterngerät darf nicht (indirekt) an diesem Gerät hängen
         let (cycle,): (bool,) = sqlx::query_as(
@@ -426,9 +464,11 @@ pub async fn update(
             parent_manual = CASE WHEN $7::bigint IS NULL THEN parent_manual ELSE $7 <> -1 END,
             energy_role = CASE WHEN $8::text IS NULL THEN energy_role WHEN $8 = 'auto' THEN NULL ELSE $8 END,
             site_id = COALESCE((SELECT id FROM sites WHERE id = $9), site_id),
-            tags = COALESCE($10, tags)
+            tags = COALESCE($10, tags),
+            {pc}
           WHERE id = $1
-          RETURNING {DEVICE_COLUMNS}"
+          RETURNING {DEVICE_COLUMNS}",
+        pc = priority_category_sql(11, 12)
     );
     let device = sqlx::query_as::<_, Device>(&sql)
         .bind(id)
@@ -441,6 +481,8 @@ pub async fn update(
         .bind(&req.energy_role)
         .bind(req.site_id)
         .bind(&tags)
+        .bind(&req.priority)
+        .bind(req.category_id)
         .fetch_optional(&st.db)
         .await
         .map_err(|e| match &e {
@@ -1090,4 +1132,39 @@ pub async fn bulk_delete(State(st): State<AppState>, Need(user, _): Need<perm::D
         .await?;
     audit::by(&st.db, &user, "device_delete_bulk", json!({ "count": deleted.len(), "ips": deleted.iter().map(|d| &d.0).collect::<Vec<_>>() })).await;
     Ok(Json(json!({ "ok": true, "deleted": deleted.len() })))
+}
+
+#[derive(Deserialize, Serialize)]
+pub struct BulkUpdate {
+    ids: Vec<i64>,
+    /// high | normal | low
+    priority: Option<String>,
+    /// 0 = automatisch, -1 = keine, sonst die Kategorie
+    category_id: Option<i64>,
+}
+
+/// Priorität und/oder Kategorie für mehrere Geräte auf einmal setzen
+pub async fn bulk_update(State(st): State<AppState>, Need(user, _): Need<perm::DevicesManage>, Json(req): Json<BulkUpdate>) -> ApiResult<Json<Value>> {
+    if req.ids.len() > 5000 {
+        return Err(ApiError::BadRequest("Zu viele Geräte auf einmal".into()));
+    }
+    if req.priority.is_none() && req.category_id.is_none() {
+        return Err(ApiError::BadRequest("Nichts zu ändern".into()));
+    }
+    check_priority_category(&st.db, req.priority.as_deref(), req.category_id).await?;
+    let sites = user.site_filter("devices.manage");
+    let sql = format!(
+        "UPDATE devices SET {} WHERE id = ANY($1) AND ($2::bigint[] IS NULL OR site_id = ANY($2))",
+        priority_category_sql(3, 4)
+    );
+    let changed = sqlx::query(&sql)
+        .bind(&req.ids)
+        .bind(&sites)
+        .bind(&req.priority)
+        .bind(req.category_id)
+        .execute(&st.db)
+        .await?
+        .rows_affected();
+    audit::by(&st.db, &user, "device_update_bulk", json!({ "count": changed, "changes": req })).await;
+    Ok(Json(json!({ "ok": true, "changed": changed })))
 }

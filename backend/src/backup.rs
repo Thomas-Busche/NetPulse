@@ -183,9 +183,11 @@ pub async fn export(state: &AppState) -> Result<Value> {
         "networks": rows(db, "SELECT cidr::text AS cidr, name, enabled, site_id, vlan_id, host(gateway) AS gateway, description, schedule
                                 FROM networks").await?,
         "credentials": credentials,
+        "device_categories": rows(db, "SELECT id, name, icon, color, position, auto_types FROM device_categories ORDER BY position, id").await?,
         "devices": rows(db, "SELECT id, host(ip) AS ip, mac, hostname, name, notes, monitored, device_type, device_type_manual,
                                     wan_interface, wan_interface_manual, parent_id, parent_manual, energy_role, ssh_host_key, tls_pin,
-                                    vendor, model, os, reported_name, integration, first_seen, open_ports, site_id, tags
+                                    vendor, model, os, reported_name, integration, first_seen, open_ports, site_id, tags,
+                                    priority, category_id, category_manual
                                FROM devices").await?,
         "device_credentials": rows(db, "SELECT device_id, credential_id FROM device_credentials").await?,
         "channels": channels,
@@ -201,7 +203,7 @@ pub async fn export(state: &AppState) -> Result<Value> {
         "group_members": rows(db, "SELECT group_id, user_id FROM group_members").await?,
         "role_assignments": rows(db, "SELECT role_id, user_id, group_id, site_id FROM role_assignments").await?,
         "dashboards": rows(db, "SELECT user_id, layout FROM dashboards").await?,
-        "dashboard_views": rows(db, "SELECT name, owner_id, layout, site_id, shared, group_ids, is_default FROM dashboard_views").await?,
+        "dashboard_views": rows(db, "SELECT name, owner_id, layout, site_id, shared, group_ids, is_default, kind FROM dashboard_views").await?,
         "settings": settings,
         "energy_daily": rows(db, "SELECT day, device_id, pos_wh, neg_wh, minutes FROM energy_daily").await?,
     }))
@@ -364,26 +366,49 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
         report.credentials += 1;
     }
 
+    // Gerätekategorien (Name)
+    let mut cat_ids = Ids::new();
+    for c in list(p, "device_categories") {
+        let (Some(old), Some(name)) = (c["id"].as_i64(), c["name"].as_str()) else { continue };
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO device_categories (name, icon, color, position, auto_types)
+             SELECT $1, COALESCE(r.icon, 'category'), COALESCE(r.color, '#64748b'), COALESCE(r.position, 0), COALESCE(r.auto_types, '{}')
+               FROM jsonb_to_record($2) AS r(icon text, color text, position int, auto_types text[])
+             ON CONFLICT (name) DO UPDATE SET icon = EXCLUDED.icon, color = EXCLUDED.color, position = EXCLUDED.position,
+                    auto_types = EXCLUDED.auto_types
+             RETURNING id",
+        )
+        .bind(name)
+        .bind(c)
+        .fetch_one(&mut *tx)
+        .await?;
+        cat_ids.insert(old, id);
+    }
+
     // Geräte (IP): Eingestelltes aus der Sicherung, Erkanntes nur ergänzen
     let mut dev_ids = Ids::new();
     for d in list(p, "devices") {
         let Some(old) = d["id"].as_i64() else { continue };
         let mut d = d.clone();
         d["site_id"] = json!(site_of(&d["site_id"]));
+        d["category_id"] = json!(map_id(&cat_ids, &d["category_id"]));
         let id: i64 = sqlx::query_scalar(
             "INSERT INTO devices (ip, mac, hostname, name, notes, monitored, device_type, device_type_manual, wan_interface,
                                   wan_interface_manual, parent_manual, energy_role, ssh_host_key, tls_pin, vendor, model, os,
-                                  reported_name, integration, first_seen, open_ports, site_id, tags)
+                                  reported_name, integration, first_seen, open_ports, site_id, tags, priority, category_id, category_manual)
              SELECT r.ip::inet, r.mac, r.hostname, r.name, r.notes, COALESCE(r.monitored, true), r.device_type,
                     COALESCE(r.device_type_manual, false), r.wan_interface, COALESCE(r.wan_interface_manual, false),
                     COALESCE(r.parent_manual, false), r.energy_role, r.ssh_host_key, r.tls_pin, r.vendor, r.model, r.os,
                     r.reported_name, r.integration, COALESCE(r.first_seen, now()), COALESCE(r.open_ports, '{}'),
-                    r.site_id, COALESCE(r.tags, '{}')
+                    r.site_id, COALESCE(r.tags, '{}'), COALESCE(r.priority, 'normal'), r.category_id,
+                    COALESCE(r.category_manual, false)
                FROM jsonb_to_record($1) AS r(ip text, mac text, hostname text, name text, notes text, monitored bool,
                     device_type text, device_type_manual bool, wan_interface text, wan_interface_manual bool, parent_manual bool,
                     energy_role text, ssh_host_key text, tls_pin text, vendor text, model text, os text, reported_name text,
-                    integration text, first_seen timestamptz, open_ports int[], site_id bigint, tags text[])
+                    integration text, first_seen timestamptz, open_ports int[], site_id bigint, tags text[],
+                    priority text, category_id bigint, category_manual bool)
              ON CONFLICT (site_id, ip) DO UPDATE SET tags = EXCLUDED.tags,
+                    priority = EXCLUDED.priority, category_id = EXCLUDED.category_id, category_manual = EXCLUDED.category_manual,
                     name = EXCLUDED.name, notes = EXCLUDED.notes, monitored = EXCLUDED.monitored,
                     device_type = CASE WHEN EXCLUDED.device_type_manual THEN EXCLUDED.device_type ELSE devices.device_type END,
                     device_type_manual = EXCLUDED.device_type_manual,
@@ -741,19 +766,26 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
         if !v["owner_id"].is_null() && owner.is_none() {
             continue;
         }
+        let kind = v["kind"].as_str().filter(|k| matches!(*k, "dashboard" | "leitstand")).unwrap_or("dashboard");
         let mut layout = v["layout"].clone();
         if let Some(widgets) = layout.as_array_mut() {
             for w in widgets {
                 remap_widget(w, &dev_ids);
+                // Leitstand-Blöcke verweisen auf Kategorien
+                if w["categories"].is_array() {
+                    w["categories"] = json!(map_ids(&cat_ids, &w["categories"]));
+                }
             }
         }
-        sqlx::query("DELETE FROM dashboard_views WHERE name = $1 AND owner_id IS NOT DISTINCT FROM $2")
+        sqlx::query("DELETE FROM dashboard_views WHERE name = $1 AND owner_id IS NOT DISTINCT FROM $2 AND kind = $3")
             .bind(name)
             .bind(owner)
+            .bind(kind)
             .execute(&mut *tx)
             .await?;
         sqlx::query(
-            "INSERT INTO dashboard_views (name, owner_id, layout, site_id, shared, group_ids, is_default) VALUES ($1, $2, $3, $4, $5, $6, $7)",
+            "INSERT INTO dashboard_views (name, owner_id, layout, site_id, shared, group_ids, is_default, kind)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
         )
         .bind(name)
         .bind(owner)
@@ -762,6 +794,7 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
         .bind(v["shared"].as_bool().unwrap_or(false))
         .bind(map_ids(&group_ids, &v["group_ids"]))
         .bind(v["is_default"].as_bool().unwrap_or(false))
+        .bind(kind)
         .execute(&mut *tx)
         .await?;
     }

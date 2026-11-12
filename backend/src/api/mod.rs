@@ -3,6 +3,7 @@
 mod admin;
 mod alerts;
 mod backup;
+mod categories;
 mod checks;
 mod credentials;
 mod dashboard;
@@ -72,6 +73,10 @@ pub fn router(state: AppState) -> Router {
         .route("/clients/import/preview", get(devices::import_preview))
         .route("/devices/imported", get(devices::imported))
         .route("/devices/bulk-delete", post(devices::bulk_delete))
+        .route("/devices/bulk-update", post(devices::bulk_update))
+        .route("/categories", get(categories::list).post(categories::create))
+        .route("/categories/order", put(categories::reorder))
+        .route("/categories/{id}", put(categories::update).delete(categories::remove))
         .route("/unifi/clients", get(devices::unifi_clients))
         .route("/energy", get(energy::report))
         .route("/energy/settings", get(energy::get_settings).put(energy::set_settings))

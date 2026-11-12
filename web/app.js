@@ -1603,6 +1603,7 @@ const ROUTES = {
   dashboard: { title: 'Dashboard', view: () => viewDashboard() },
   leitstand: { title: 'Leitstand', view: (a, p) => viewLeitstand(a, p), perm: 'view' },
   sites: { title: 'Sektoren', view: () => viewSites(), perm: 'view' },
+  categories: { title: 'Kategorien', view: () => viewCategories(), perm: 'view' },
   devices: { title: 'Geräte', view: (a, p) => viewDevices(a, p) },
   device: { title: 'Gerät', view: (a, p) => viewDevice(a, p), nav: 'devices' },
   alerts: { title: 'Alarme', view: (a, p) => viewAlerts(a, p) },
