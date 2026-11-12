@@ -89,9 +89,14 @@ GitHub baut bei jeder Änderung fertige Images für Intel/AMD und Raspberry Pi
    | `DB_PASSWORD` | `a8f3…` (lang, zufällig) | nur Buchstaben und Ziffern, z. B. von `openssl rand -hex 24` |
    | `SITE_ADDRESS` | `https://192.168.1.10:8443` | IP deines NAS/Pi und Port |
    | `SCAN_NETWORKS` | leer | leer = eigenes Netz automatisch erkennen; sonst z. B. `192.168.1.0/24` |
-   | `INITIAL_ADMIN_PASSWORD` | mind. 12 Zeichen | nach dem ersten Login ändern |
+   | `INITIAL_ADMIN_PASSWORD` | mind. 12 Zeichen | nach dem ersten Login ändern; **kein `$`** (Compose wertet es aus), keine Leerzeichen am Anfang/Ende |
 4. **Deploy the stack**. Nach etwa einer Minute ist NetPulse unter `SITE_ADDRESS` erreichbar
    (Benutzer `admin`).
+
+**Anmeldung klappt nicht?** Log von `netpulse-app` ansehen: Dort steht, ob der Admin mit deinem Passwort angelegt
+wurde (inkl. Länge – passt sie nicht, hat Compose Zeichen wie `$` verschluckt) oder ob ein zufälliges Passwort vergeben
+wurde. Das Startpasswort gilt nur für eine leere Datenbank. Notfall: Container `netpulse-app` → *Console* →
+`netpulse reset-password admin`.
 
 **Updates:** Stack öffnen → **Pull and redeploy** und dabei *Re-pull image* aktivieren.
 Wer es automatisch mag, schaltet im Stack **GitOps updates** ein.
