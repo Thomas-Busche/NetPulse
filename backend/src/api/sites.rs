@@ -189,6 +189,8 @@ struct SiteCounts {
     monitored: i64,
     up: i64,
     down: i64,
+    /// davon als unwichtig markiert (machen die Ampel nicht gelb)
+    down_low: i64,
     unknown: i64,
     avail_24h: Option<f64>,
 }
@@ -210,6 +212,7 @@ pub async fn status(State(st): State<AppState>, user: Need<perm::View>, Query(q)
         "SELECT d.site_id, count(*) AS devices, count(*) FILTER (WHERE d.monitored) AS monitored,
                 count(*) FILTER (WHERE d.monitored AND d.status = 'up') AS up,
                 count(*) FILTER (WHERE d.monitored AND d.status = 'down') AS down,
+                count(*) FILTER (WHERE d.monitored AND d.status = 'down' AND d.priority = 'low') AS down_low,
                 count(*) FILTER (WHERE d.monitored AND d.status = 'unknown') AS unknown,
                 (SELECT round(100.0 * avg(CASE WHEN m.up THEN 1 ELSE 0 END), 2)::float8 FROM device_metrics m
                    JOIN devices x ON x.id = m.device_id WHERE x.site_id = d.site_id AND m.time > now() - interval '24 hours') AS avail_24h
@@ -272,7 +275,8 @@ pub async fn status(State(st): State<AppState>, user: Need<perm::View>, Query(q)
             site.id,
             json!({
                 "devices": c.map_or(0, |c| c.devices), "monitored": c.map_or(0, |c| c.monitored),
-                "up": c.map_or(0, |c| c.up), "down": c.map_or(0, |c| c.down), "unknown": c.map_or(0, |c| c.unknown),
+                "up": c.map_or(0, |c| c.up), "down": c.map_or(0, |c| c.down), "down_low": c.map_or(0, |c| c.down_low),
+                "unknown": c.map_or(0, |c| c.unknown),
                 "avail_24h": c.and_then(|c| c.avail_24h),
                 "alerts": {
                     "critical": sev("critical", false), "warning": sev("warning", false), "info": sev("info", false),
@@ -293,6 +297,7 @@ pub async fn status(State(st): State<AppState>, user: Need<perm::View>, Query(q)
         let sum = |path: &[&str]| parts.iter().map(|v| num(v, path)).sum::<i64>();
         let rollup = json!({
             "devices": sum(&["devices"]), "monitored": sum(&["monitored"]), "up": sum(&["up"]), "down": sum(&["down"]),
+            "down_low": sum(&["down_low"]),
             "unknown": sum(&["unknown"]),
             "alerts": { "critical": sum(&["alerts", "critical"]), "warning": sum(&["alerts", "warning"]),
                         "info": sum(&["alerts", "info"]), "acknowledged": sum(&["alerts", "acknowledged"]) },
@@ -318,12 +323,12 @@ pub async fn status(State(st): State<AppState>, user: Need<perm::View>, Query(q)
 }
 
 /// Ampel: rot = unbestätigter kritischer Alarm oder Dienst aus; gelb = Warnung, bestätigter Alarm,
-/// Gerät offline oder Probe nicht erreichbar; blau = Wartung; sonst grün.
+/// Gerät offline (außer unwichtige) oder Probe nicht erreichbar; blau = Wartung; sonst grün.
 pub fn traffic_light(r: &Value) -> &'static str {
     let n = |path: &[&str]| path.iter().fold(r, |v, k| &v[*k]).as_i64().unwrap_or(0);
     if n(&["alerts", "critical"]) > 0 || n(&["checks", "down"]) > 0 {
         "red"
-    } else if n(&["alerts", "warning"]) > 0 || n(&["alerts", "acknowledged"]) > 0 || n(&["down"]) > 0 || n(&["probes_offline"]) > 0 {
+    } else if n(&["alerts", "warning"]) > 0 || n(&["alerts", "acknowledged"]) > 0 || n(&["down"]) - n(&["down_low"]) > 0 || n(&["probes_offline"]) > 0 {
         "yellow"
     } else if r["maintenance"] == json!(true) {
         "maintenance"
@@ -332,18 +337,18 @@ pub fn traffic_light(r: &Value) -> &'static str {
     }
 }
 
-type DownRow = (i64, String, String, i64, String, Option<DateTime<Utc>>, String);
+type DownRow = (i64, String, String, i64, String, Option<DateTime<Utc>>, String, String);
 type CheckRow = (i64, String, String, Option<i64>, Option<String>, Option<DateTime<Utc>>, Option<String>);
 
 /// „Jetzt kaputt“: offene Alarme, ausgefallene Geräte und Dienste – nach Schwere und Dauer sortiert
 pub async fn problems(State(st): State<AppState>, user: Need<perm::View>, Query(q): Query<SiteQuery>) -> ApiResult<Json<Value>> {
     let filter = crate::sites::filter(&st.db, &user, "view", q.site).await?;
     type AlertRow = (i64, DateTime<Utc>, String, Option<String>, Option<i64>, Option<String>, Option<i64>, Option<String>,
-                     Option<DateTime<Utc>>, Option<String>, Option<String>, String, Option<i64>);
+                     Option<DateTime<Utc>>, Option<String>, Option<String>, String, Option<i64>, Option<String>);
     let alerts: Vec<AlertRow> = sqlx::query_as(
         "SELECT a.id, a.opened_at, a.message, a.severity, a.device_id,
                 COALESCE(d.name, d.reported_name, d.hostname, host(d.ip)), COALESCE(d.site_id, c.site_id), s.name,
-                a.acknowledged_at, u.username, a.ack_comment, r.name, a.check_id
+                a.acknowledged_at, u.username, a.ack_comment, r.name, a.check_id, d.priority
            FROM alerts a JOIN alert_rules r ON r.id = a.rule_id
            LEFT JOIN devices d ON d.id = a.device_id LEFT JOIN checks c ON c.id = a.check_id
            LEFT JOIN sites s ON s.id = COALESCE(d.site_id, c.site_id)
@@ -357,7 +362,7 @@ pub async fn problems(State(st): State<AppState>, user: Need<perm::View>, Query(
     // Ausgefallene Geräte ohne offenen Alarm (z. B. keine Regel) – als Hinweis
     let down: Vec<DownRow> = sqlx::query_as(
         "SELECT d.id, COALESCE(d.name, d.reported_name, d.hostname, host(d.ip)), host(d.ip), d.site_id, s.name, d.status_since,
-                COALESCE(d.device_type, 'unknown')
+                COALESCE(d.device_type, 'unknown'), d.priority
            FROM devices d JOIN sites s ON s.id = d.site_id
           WHERE d.monitored AND d.status = 'down' AND ($1::bigint[] IS NULL OR d.site_id = ANY($1))
             AND NOT EXISTS (SELECT 1 FROM alerts a WHERE a.device_id = d.id AND a.resolved_at IS NULL)
@@ -383,34 +388,46 @@ pub async fn problems(State(st): State<AppState>, user: Need<perm::View>, Query(
         "info" => 2,
         _ => 3,
     };
-    let mut items: Vec<(i32, bool, DateTime<Utc>, Value)> = Vec::new();
-    for (id, opened, message, severity, device_id, device, site_id, site, acked_at, acked_by, comment, rule, check_id) in alerts {
+    // Wichtige Geräte innerhalb derselben Schwere zuerst
+    let prio_rank = |p: Option<&str>| match p {
+        Some("high") => 0,
+        Some("low") => 2,
+        _ => 1,
+    };
+    let mut items: Vec<(i32, bool, i32, DateTime<Utc>, Value)> = Vec::new();
+    for (id, opened, message, severity, device_id, device, site_id, site, acked_at, acked_by, comment, rule, check_id, priority) in alerts {
         let severity = severity.unwrap_or_else(|| "warning".into());
         let acked = acked_at.is_some();
-        items.push((rank(&severity), acked, opened, json!({
-            "kind": "alert", "id": id, "since": opened, "message": message, "severity": severity, "rule": rule,
+        items.push((rank(&severity), acked, prio_rank(priority.as_deref()), opened, json!({
+            "kind": "alert", "id": id, "since": opened, "message": message, "severity": severity, "rule": rule, "priority": priority,
             "device_id": device_id, "device": device, "check_id": check_id, "site_id": site_id, "site": site,
             "acknowledged_at": acked_at, "acknowledged_by": acked_by, "ack_comment": comment,
         })));
     }
-    for (id, label, ip, site_id, site, since, kind) in down {
+    for (id, label, ip, site_id, site, since, kind, priority) in down {
         let since = since.unwrap_or_else(Utc::now);
-        items.push((1, false, since, json!({
+        // Ohne Alarmregel: Schwere nach Priorität (wichtig = kritisch, unwichtig = Hinweis)
+        let severity = match priority.as_str() {
+            "high" => "critical",
+            "low" => "info",
+            _ => "warning",
+        };
+        items.push((rank(severity), false, prio_rank(Some(&priority)), since, json!({
             "kind": "device", "id": id, "since": since, "message": format!("{label} ({ip}) ist nicht erreichbar"),
-            "severity": "warning", "device_id": id, "device": label, "device_type": kind, "site_id": site_id, "site": site,
+            "severity": severity, "priority": priority, "device_id": id, "device": label, "device_type": kind, "site_id": site_id, "site": site,
         })));
     }
     for (id, name, target, site_id, site, since, reason) in checks {
         let since = since.unwrap_or_else(Utc::now);
-        items.push((0, false, since, json!({
+        items.push((0, false, 1, since, json!({
             "kind": "check", "id": id, "since": since,
             "message": format!("Dienst „{name}“ ({target}) funktioniert nicht{}", reason.map(|r| format!(": {r}")).unwrap_or_default()),
             "severity": "critical", "check_id": id, "site_id": site_id, "site": site,
         })));
     }
     // Unbestätigtes zuerst, dann nach Schwere, dann am längsten bestehend
-    items.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)).then(a.2.cmp(&b.2)));
-    Ok(Json(json!(items.into_iter().map(|i| i.3).collect::<Vec<_>>())))
+    items.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)).then(a.2.cmp(&b.2)).then(a.3.cmp(&b.3)));
+    Ok(Json(json!(items.into_iter().map(|i| i.4).collect::<Vec<_>>())))
 }
 
 #[cfg(test)]
@@ -428,6 +445,8 @@ mod tests {
         let mut r = base.clone();
         r["down"] = json!(2);
         assert_eq!(traffic_light(&r), "yellow");
+        r["down_low"] = json!(2);
+        assert_eq!(traffic_light(&r), "green", "unwichtige Geräte offline = kein Grund für Gelb");
         let mut r = base.clone();
         r["alerts"]["acknowledged"] = json!(1);
         assert_eq!(traffic_light(&r), "yellow", "bestätigt = in Arbeit, nicht mehr rot");
