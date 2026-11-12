@@ -30,6 +30,7 @@ mod oui;
 mod perf;
 mod probe;
 mod push;
+mod routers;
 mod scanner;
 mod sites;
 mod syslog;

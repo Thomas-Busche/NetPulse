@@ -24,6 +24,9 @@ installiert** werden. Alles läuft in Docker, z. B. auf einem NAS oder Raspberry
   über OpenID Connect (Entra ID, Keycloak, Authentik …) mit Gruppenabgleich, **API-Schlüssel** für Skripte.
 - **Probes:** ein kleiner NetPulse-Ableger (`netpulse probe`) prüft entfernte Sektoren vor Ort und meldet nur über
   ausgehendes HTTPS – kein VPN, keine Portfreigabe in der Filiale.
+- **Läuft in jedem Netz, mit jedem Router:** erkennt die eigenen Netze samt Gateway selbst; ein
+  **Einrichtungs-Assistent** führt beim ersten Start durch Netz, Router (über 30 Router-Familien mit passender
+  Zugangsart und Anleitung), optionale Zugangsdaten und Benachrichtigung.
 - **Geräteerkennung:** Ping, TCP, ARP, Reverse-DNS, 28 typische Ports, **Hersteller aus der MAC-Adresse**
   (IEEE-Liste mit über 40.000 Einträgen) und **automatische Erkennung des Gerätetyps** (Router, Switch, NAS, Drucker,
   Windows-PC, Smartphone, Kamera, Smart Home …) mit passenden Icons.

@@ -82,9 +82,11 @@ fn interface_addresses() -> Vec<(String, Ipv4Addr, u8)> {
     out
 }
 
-/// Gateways aus `/proc/net/route`: (Schnittstelle, Gateway); Standardrouten (0.0.0.0/0) zuerst
+/// Gateways aus `/proc/net/route`: (Schnittstelle, Gateway); Standardrouten (0.0.0.0/0) zuerst.
+/// Routen über Docker-, VPN- und VM-Schnittstellen zählen nicht – das sind keine Router des eigenen Netzes.
 pub fn gateways() -> Vec<(String, Ipv4Addr)> {
-    std::fs::read_to_string("/proc/net/route").map(|c| parse_routes(&c)).unwrap_or_default()
+    let routes = std::fs::read_to_string("/proc/net/route").map(|c| parse_routes(&c)).unwrap_or_default();
+    routes.into_iter().filter(|(iface, _)| !is_virtual(iface)).collect()
 }
 
 /// Spalten: Iface Destination Gateway Flags … Mask (Adressen hexadezimal, Byte-Reihenfolge des Hosts)

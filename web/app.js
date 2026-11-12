@@ -1609,6 +1609,7 @@ const ROUTES = {
   energy: { title: 'Energie', view: (a, p) => viewEnergy(a, p) },
   syslog: { title: 'Protokolle', view: (a, p) => viewSyslog(a, p), perm: 'devices.diagnose' },
   statuspage: { title: 'Statusseite', view: () => viewStatusPage(), perm: 'settings.manage' },
+  setup: { title: 'Einrichtung', view: (a, p) => viewSetup(a, p), perm: 'networks.manage' },
   networks: { title: 'Netzwerke', view: () => viewNetworks(), perm: 'networks.manage' },
   credentials: { title: 'Zugangsdaten', view: () => viewCredentials(), perm: 'credentials.manage' },
   channels: { title: 'Benachrichtigungen', view: () => viewChannels(), perm: 'alerts.manage' },
@@ -1777,8 +1778,14 @@ function startApp() {
   // Alarme kommen sofort über den Live-Stream; die Seitenleiste reicht alle 30 s
   state.globalTimer = setInterval(() => { if (!document.hidden) refreshShell(); }, 30000);
   if (state.user.kiosk && !location.hash.startsWith('#/leitstand')) location.hash = '#/leitstand';
-  else if (!location.hash || location.hash === '#/') location.hash = '#/dashboard';
-  else route();
+  else {
+    // Neue Installation: zuerst der Einrichtungs-Assistent
+    maybeStartSetup().then((moved) => {
+      if (moved) return;
+      if (!location.hash || location.hash === '#/') location.hash = '#/dashboard';
+      else route();
+    });
+  }
 }
 
 function init() {

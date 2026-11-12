@@ -268,7 +268,8 @@ async function viewNetworks() {
     <div id="scan-area"></div>
     <div class="grid">
       <section class="card span-2"><header><h2>${icon('topology-star-3')}Freigegebene Netze</h2>
-        <div class="actions"><button type="button" class="ghost sm" id="net-detect">${icon('search', 'i-sm')}Netze erkennen</button>
+        <div class="actions"><a class="btn ghost sm" href="#/setup">${icon('wand', 'i-sm')}Assistent</a>
+        <button type="button" class="ghost sm" id="net-detect">${icon('search', 'i-sm')}Netze erkennen</button>
         <button type="button" class="ghost sm" id="scan-all">${icon('radar', 'i-sm')}Alle scannen</button></div></header>
         <div id="net-list"><div class="empty">Lade …</div></div></section>
       <section class="card span-1"><header><h2>${icon('plus')}Netz hinzufügen</h2></header>
@@ -539,6 +540,86 @@ const CRED_KINDS = {
 /** Nur fest einem Gerät zugeordnet, nie automatisch ausprobiert */
 const DEVICE_ONLY_KINDS = ['unifi', 'fritzbox', 'opnsense', 'mikrotik'];
 
+/**
+ * Zugangsdaten anlegen/bearbeiten. `opts.kind`/`opts.name` füllen ein neues Formular vor,
+ * `opts.onSaved(created|null)` läuft nach dem Speichern (`created` nur beim Anlegen).
+ */
+function credDialog(cred, opts = {}) {
+  const editing = !!cred;
+  const keep = editing ? 'leer lassen = unverändert' : '';
+  const dlg = openModal(editing ? 'Zugangsdaten bearbeiten' : 'Zugangsdaten hinzufügen', `<form class="form" id="cred-form">
+    <label>Art<select name="kind"${editing ? ' disabled' : ''}>${Object.entries(CRED_KINDS).map(([k, v]) => `<option value="${k}"${(cred ? cred.kind : opts.kind) === k ? ' selected' : ''}>${esc(v.label)}</option>`).join('')}</select></label>
+    <label>Name<input name="name" required maxlength="100" value="${esc(cred ? cred.name : opts.name || '')}" placeholder="z. B. Router SNMP"></label>
+    <div class="form-row">
+      <label data-for="snmp_v3 ssh_key ssh_password http unifi fritzbox opnsense mikrotik"><span id="user-label">Benutzername</span><input name="username" value="${esc(cred ? cred.username || '' : '')}" autocomplete="off"></label>
+      <label>Port<input name="port" type="number" min="1" max="65535" value="${esc(cred ? cred.port || '' : '')}" placeholder="Standard"></label>
+    </div>
+    <label data-for="snmp_v2c">Community<input name="community" type="password" autocomplete="new-password" placeholder="${keep || 'z. B. public'}"></label>
+    <div class="form-row" data-for="snmp_v3">
+      <label>Authentifizierung<select name="auth_protocol"><option value="sha1">SHA-1</option><option value="sha256" selected>SHA-256</option>
+        <option value="sha512">SHA-512</option><option value="md5">MD5 (veraltet)</option><option value="none">keine</option></select></label>
+      <label>Auth-Passwort<input name="auth_password" type="password" autocomplete="new-password" placeholder="${keep}"></label>
+    </div>
+    <div class="form-row" data-for="snmp_v3">
+      <label>Verschlüsselung<select name="priv_protocol"><option value="aes128" selected>AES-128</option><option value="aes256">AES-256</option>
+        <option value="des">DES (veraltet)</option><option value="none">keine</option></select></label>
+      <label>Verschlüsselungs-Passwort<input name="priv_password" type="password" autocomplete="new-password" placeholder="${keep}"></label>
+    </div>
+    <label data-for="ssh_password http unifi fritzbox opnsense mikrotik"><span id="pw-label">Passwort</span><input name="password" type="password" autocomplete="new-password" placeholder="${keep}"></label>
+    <label data-for="ssh_key">Privater Schlüssel (OpenSSH-Format)<textarea name="private_key" class="mono" placeholder="${keep || '-----BEGIN OPENSSH PRIVATE KEY-----'}"></textarea></label>
+    <label data-for="ssh_key">Passphrase (optional)<input name="passphrase" type="password" autocomplete="new-password" placeholder="${keep}"></label>
+    <label class="inline" data-for="snmp_v2c snmp_v3 ssh_key http"><input type="checkbox" name="auto"${cred && cred.auto ? ' checked' : ''}> Automatisch bei allen passenden Geräten verwenden</label>
+    <p class="hint" id="auto-hint"></p>
+    <div class="actions"><button type="submit">${icon('check')}Speichern</button></div></form>`);
+  const form = $('#cred-form', dlg);
+  const update = () => {
+    const kind = form.kind.value;
+    $$('[data-for]', form).forEach((el) => { el.hidden = !el.dataset.for.split(' ').includes(kind); });
+    $('#auto-hint', dlg).textContent = kind === 'snmp_v2c'
+      ? 'Hinweis: Bei SNMP v2c wird die Community unverschlüsselt an jedes getestete Gerät gesendet. Für „automatisch“ besser SNMP v3.'
+      : kind === 'ssh_password' ? 'SSH-Passwörter werden aus Sicherheitsgründen nie automatisch ausprobiert – bitte Geräte gezielt zuordnen.'
+        : kind === 'http' ? 'Gilt für alle erkannten Shelly-Geräte (Benutzer bei Gen2+ immer „admin“). Das Passwort geht nur an Geräte, die sich '
+          + 'vorher als Shelly ausgewiesen haben; bei Gen2+ wird es per Digest-Verfahren nie im Klartext übertragen.'
+          : kind === 'unifi' ? 'Empfohlen: API-Schlüssel – funktioniert auch mit Zwei-Faktor-Anmeldung. Anlegen in UniFi Network unter '
+            + 'Einstellungen → Control Plane → Integrations → „Create API Key“. Benutzername dann leer lassen. Alternativ ein lokales Konto '
+            + 'ohne 2FA (Benutzer + Passwort). Port leer = 11443 (UniFi OS Server), 443 und 8443 werden probiert. Wird nur dem Controller zugeordnet.'
+            : kind === 'fritzbox' ? 'In der FRITZ!Box: Heimnetz → Netzwerk → Netzwerkeinstellungen → „Zugriff für Anwendungen zulassen“ einschalten. '
+              + 'Am besten einen eigenen FRITZ!Box-Benutzer anlegen (System → FRITZ!Box-Benutzer). Liefert alle Geräte mit Namen, LAN/WLAN, '
+              + 'WLAN-Signal und Geschwindigkeit. Das Passwort wird per Digest-Verfahren nie im Klartext übertragen. Wird nur der FRITZ!Box zugeordnet.'
+              : kind === 'opnsense' ? 'In OPNsense: System → Zugang → Benutzer → neuen Benutzer anlegen, Rechte nur lesend („Diagnostics: ARP Table“, '
+                + '„Reporting: Traffic“, „Services: DHCP … Leases“), dort unter „API-Schlüssel“ einen Schlüssel erzeugen. Schlüssel ins Feld '
+                + '„API-Schlüssel“, Secret ins Feld „API-Secret“. Liefert alle Geräte aller VLANs mit Namen und aktueller Datenrate.'
+                : kind === 'mikrotik' ? 'RouterOS 7: Benutzer mit Gruppe „read“ anlegen und unter IP → Services „www-ssl“ (Port 443) oder „www“ '
+                  + '(Port 80, nur im LAN) einschalten. Liefert WLAN-Clients mit Signal und Datenrate, Bridge-Ports, ARP und DHCP-Namen.' : '';
+    $('#user-label', dlg).textContent = kind === 'unifi' ? 'Benutzername (nur lokales Konto, sonst leer)' : kind === 'opnsense' ? 'API-Schlüssel' : 'Benutzername';
+    $('#pw-label', dlg).textContent = kind === 'unifi' ? 'API-Schlüssel (oder Passwort des lokalen Kontos)' : kind === 'opnsense' ? 'API-Secret' : 'Passwort';
+    if (kind === 'http' && !form.elements.username.value) form.elements.username.value = 'admin';
+  };
+  form.kind.addEventListener('change', update);
+  update();
+  form.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const kind = form.kind.value;
+    const v = (n) => form.elements[n].value.trim();
+    const secret = {};
+    ['community', 'password', 'private_key', 'passphrase', 'auth_password', 'priv_password'].forEach((n) => { if (form.elements[n].value) secret[n] = form.elements[n].value; });
+    if (kind === 'snmp_v3') { secret.auth_protocol = v('auth_protocol'); secret.priv_protocol = v('priv_protocol'); }
+    const body = { name: v('name'), kind, username: v('username'), port: v('port') ? Number(v('port')) : null,
+      auto: !DEVICE_ONLY_KINDS.includes(kind) && form.auto.checked, secret };
+    attempt(async () => {
+      if (editing) {
+        await api(`/credentials/${cred.id}`, { method: 'PATCH', body });
+        dlg.close();
+        if (opts.onSaved) await opts.onSaved(null);
+      } else {
+        const created = await api('/credentials', { method: 'POST', body });
+        dlg.close();
+        if (opts.onSaved) await opts.onSaved(created);
+      }
+    }, 'Zugangsdaten gespeichert');
+  });
+}
+
 async function viewCredentials() {
   const render = async () => {
     const creds = await api('/credentials');
@@ -559,8 +640,10 @@ async function viewCredentials() {
           <button type="button" class="ghost sm" data-edit="${c.id}" title="Bearbeiten">${icon('edit', 'i-sm')}</button>
           <button type="button" class="ghost sm" data-del="${c.id}" title="Löschen">${icon('trash', 'i-sm')}</button></td></tr>`).join('')}</tbody></table></div>`
       : empty('Noch keine Zugangsdaten. Mit SNMP oder SSH liest NetPulse CPU, RAM, Festplatten, Schnittstellen, Toner und mehr aus.', 'key')}</div>`;
-    $('#cred-add').addEventListener('click', () => credDialog(null));
-    $$('[data-edit]').forEach((b) => b.addEventListener('click', () => credDialog(creds.find((c) => c.id === Number(b.dataset.edit)))));
+    // Nach dem Anlegen direkt Geräte auswählen und testen
+    const onSaved = async (created) => { await render(); if (created) assignDialog(created); };
+    $('#cred-add').addEventListener('click', () => credDialog(null, { onSaved }));
+    $$('[data-edit]').forEach((b) => b.addEventListener('click', () => credDialog(creds.find((c) => c.id === Number(b.dataset.edit)), { onSaved })));
     $$('[data-test]').forEach((b) => b.addEventListener('click', () => testDialog(creds.find((c) => c.id === Number(b.dataset.test)))));
     $$('[data-assign]').forEach((b) => b.addEventListener('click', () => assignDialog(creds.find((c) => c.id === Number(b.dataset.assign)))));
     $$('[data-del]').forEach((b) => b.addEventListener('click', () => {
@@ -568,83 +651,6 @@ async function viewCredentials() {
       attempt(async () => { await api(`/credentials/${b.dataset.del}`, { method: 'DELETE' }); await render(); }, 'Gelöscht');
     }));
   };
-
-  function credDialog(cred) {
-    const editing = !!cred;
-    const keep = editing ? 'leer lassen = unverändert' : '';
-    const dlg = openModal(editing ? 'Zugangsdaten bearbeiten' : 'Zugangsdaten hinzufügen', `<form class="form" id="cred-form">
-      <label>Art<select name="kind"${editing ? ' disabled' : ''}>${Object.entries(CRED_KINDS).map(([k, v]) => `<option value="${k}"${cred && cred.kind === k ? ' selected' : ''}>${esc(v.label)}</option>`).join('')}</select></label>
-      <label>Name<input name="name" required maxlength="100" value="${esc(cred ? cred.name : '')}" placeholder="z. B. Heimnetz SNMP"></label>
-      <div class="form-row">
-        <label data-for="snmp_v3 ssh_key ssh_password http unifi fritzbox opnsense mikrotik"><span id="user-label">Benutzername</span><input name="username" value="${esc(cred ? cred.username || '' : '')}" autocomplete="off"></label>
-        <label>Port<input name="port" type="number" min="1" max="65535" value="${esc(cred ? cred.port || '' : '')}" placeholder="Standard"></label>
-      </div>
-      <label data-for="snmp_v2c">Community<input name="community" type="password" autocomplete="new-password" placeholder="${keep || 'z. B. public'}"></label>
-      <div class="form-row" data-for="snmp_v3">
-        <label>Authentifizierung<select name="auth_protocol"><option value="sha1">SHA-1</option><option value="sha256" selected>SHA-256</option>
-          <option value="sha512">SHA-512</option><option value="md5">MD5 (veraltet)</option><option value="none">keine</option></select></label>
-        <label>Auth-Passwort<input name="auth_password" type="password" autocomplete="new-password" placeholder="${keep}"></label>
-      </div>
-      <div class="form-row" data-for="snmp_v3">
-        <label>Verschlüsselung<select name="priv_protocol"><option value="aes128" selected>AES-128</option><option value="aes256">AES-256</option>
-          <option value="des">DES (veraltet)</option><option value="none">keine</option></select></label>
-        <label>Verschlüsselungs-Passwort<input name="priv_password" type="password" autocomplete="new-password" placeholder="${keep}"></label>
-      </div>
-      <label data-for="ssh_password http unifi fritzbox opnsense mikrotik"><span id="pw-label">Passwort</span><input name="password" type="password" autocomplete="new-password" placeholder="${keep}"></label>
-      <label data-for="ssh_key">Privater Schlüssel (OpenSSH-Format)<textarea name="private_key" class="mono" placeholder="${keep || '-----BEGIN OPENSSH PRIVATE KEY-----'}"></textarea></label>
-      <label data-for="ssh_key">Passphrase (optional)<input name="passphrase" type="password" autocomplete="new-password" placeholder="${keep}"></label>
-      <label class="inline" data-for="snmp_v2c snmp_v3 ssh_key http"><input type="checkbox" name="auto"${cred && cred.auto ? ' checked' : ''}> Automatisch bei allen passenden Geräten verwenden</label>
-      <p class="hint" id="auto-hint"></p>
-      <div class="actions"><button type="submit">${icon('check')}Speichern</button></div></form>`);
-    const form = $('#cred-form', dlg);
-    const update = () => {
-      const kind = form.kind.value;
-      $$('[data-for]', form).forEach((el) => { el.hidden = !el.dataset.for.split(' ').includes(kind); });
-      $('#auto-hint', dlg).textContent = kind === 'snmp_v2c'
-        ? 'Hinweis: Bei SNMP v2c wird die Community unverschlüsselt an jedes getestete Gerät gesendet. Für „automatisch“ besser SNMP v3.'
-        : kind === 'ssh_password' ? 'SSH-Passwörter werden aus Sicherheitsgründen nie automatisch ausprobiert – bitte Geräte gezielt zuordnen.'
-          : kind === 'http' ? 'Gilt für alle erkannten Shelly-Geräte (Benutzer bei Gen2+ immer „admin“). Das Passwort geht nur an Geräte, die sich '
-            + 'vorher als Shelly ausgewiesen haben; bei Gen2+ wird es per Digest-Verfahren nie im Klartext übertragen.'
-            : kind === 'unifi' ? 'Empfohlen: API-Schlüssel – funktioniert auch mit Zwei-Faktor-Anmeldung. Anlegen in UniFi Network unter '
-              + 'Einstellungen → Control Plane → Integrations → „Create API Key“. Benutzername dann leer lassen. Alternativ ein lokales Konto '
-              + 'ohne 2FA (Benutzer + Passwort). Port leer = 11443 (UniFi OS Server), 443 und 8443 werden probiert. Wird nur dem Controller zugeordnet.'
-              : kind === 'fritzbox' ? 'In der FRITZ!Box: Heimnetz → Netzwerk → Netzwerkeinstellungen → „Zugriff für Anwendungen zulassen“ einschalten. '
-                + 'Am besten einen eigenen FRITZ!Box-Benutzer anlegen (System → FRITZ!Box-Benutzer). Liefert alle Geräte mit Namen, LAN/WLAN, '
-                + 'WLAN-Signal und Geschwindigkeit. Das Passwort wird per Digest-Verfahren nie im Klartext übertragen. Wird nur der FRITZ!Box zugeordnet.'
-                : kind === 'opnsense' ? 'In OPNsense: System → Zugang → Benutzer → neuen Benutzer anlegen, Rechte nur lesend („Diagnostics: ARP Table“, '
-                  + '„Reporting: Traffic“, „Services: DHCP … Leases“), dort unter „API-Schlüssel“ einen Schlüssel erzeugen. Schlüssel ins Feld '
-                  + '„API-Schlüssel“, Secret ins Feld „API-Secret“. Liefert alle Geräte aller VLANs mit Namen und aktueller Datenrate.'
-                  : kind === 'mikrotik' ? 'RouterOS 7: Benutzer mit Gruppe „read“ anlegen und unter IP → Services „www-ssl“ (Port 443) oder „www“ '
-                    + '(Port 80, nur im LAN) einschalten. Liefert WLAN-Clients mit Signal und Datenrate, Bridge-Ports, ARP und DHCP-Namen.' : '';
-      $('#user-label', dlg).textContent = kind === 'unifi' ? 'Benutzername (nur lokales Konto, sonst leer)' : kind === 'opnsense' ? 'API-Schlüssel' : 'Benutzername';
-      $('#pw-label', dlg).textContent = kind === 'unifi' ? 'API-Schlüssel (oder Passwort des lokalen Kontos)' : kind === 'opnsense' ? 'API-Secret' : 'Passwort';
-      if (kind === 'http' && !form.elements.username.value) form.elements.username.value = 'admin';
-    };
-    form.kind.addEventListener('change', update);
-    update();
-    form.addEventListener('submit', (ev) => {
-      ev.preventDefault();
-      const kind = form.kind.value;
-      const v = (n) => form.elements[n].value.trim();
-      const secret = {};
-      ['community', 'password', 'private_key', 'passphrase', 'auth_password', 'priv_password'].forEach((n) => { if (form.elements[n].value) secret[n] = form.elements[n].value; });
-      if (kind === 'snmp_v3') { secret.auth_protocol = v('auth_protocol'); secret.priv_protocol = v('priv_protocol'); }
-      const body = { name: v('name'), kind, username: v('username'), port: v('port') ? Number(v('port')) : null,
-        auto: !DEVICE_ONLY_KINDS.includes(kind) && form.auto.checked, secret };
-      attempt(async () => {
-        if (editing) {
-          await api(`/credentials/${cred.id}`, { method: 'PATCH', body });
-          dlg.close();
-          await render();
-        } else {
-          const created = await api('/credentials', { method: 'POST', body });
-          dlg.close();
-          await render();
-          assignDialog(created); // direkt Geräte auswählen und testen
-        }
-      }, 'Zugangsdaten gespeichert');
-    });
-  }
 
   /** Passt ein Gerät grundsätzlich zur Zugangsart? (für die Vorauswahl) */
   const suits = (cred, d) => {
@@ -849,6 +855,75 @@ function channelStatus(c) {
   return parts.join('');
 }
 
+/** Benachrichtigungskanal anlegen/bearbeiten; `onSaved(saved)` läuft nach dem Speichern */
+function channelDialog(channel, onSaved) {
+  const editing = !!channel;
+  const fieldsHtml = (kind, config = {}) => {
+    const def = CHANNEL_KINDS[kind];
+    return [...def.fields, ...DELIVERY_FIELDS].map(([key, label, placeholder, type]) => {
+      if (key.startsWith('-')) return `<h3 class="sub">${esc(label)}</h3>`;
+      const value = config[key] ?? (key === 'server' && !editing ? 'https://ntfy.sh' : '');
+      if (type === 'textarea') {
+        return `<label>${esc(label)}<textarea name="cfg_${key}" rows="6" class="mono" placeholder="${esc(placeholder)}">${esc(value)}</textarea></label>`;
+      }
+      if (type === 'checkbox') {
+        return `<label class="inline"><input type="checkbox" name="cfg_${key}"${(config[key] ?? placeholder) ? ' checked' : ''}> ${esc(label)}</label>`;
+      }
+      if (type === 'number' || type === 'time') {
+        return `<label>${esc(label)}<input name="cfg_${key}" type="${type}" ${type === 'number' ? 'min="0" max="1440"' : ''} value="${esc(value)}" placeholder="${esc(placeholder)}"></label>`;
+      }
+      if (type && type.startsWith('select:')) {
+        const opts = type.slice(7).split(',').map((o) => o.split('='));
+        return `<label>${esc(label)}<select name="cfg_${key}">${opts.map(([v, l]) => `<option value="${v}"${value === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label>`;
+      }
+      return `<label>${esc(label)}<input name="cfg_${key}" type="${type === 'password' ? 'password' : 'text'}" autocomplete="off" value="${esc(value)}" placeholder="${esc(placeholder)}"></label>`;
+    }).join('') + (def.hint ? `<p class="hint">${esc(def.hint)}</p>` : '');
+  };
+  const dlg = openModal(editing ? 'Kanal bearbeiten' : 'Kanal hinzufügen', `<form class="form" id="ch-form">
+    <label>Art<select name="kind"${editing ? ' disabled' : ''}>${Object.entries(CHANNEL_KINDS).map(([k, v]) => `<option value="${k}"${channel && channel.kind === k ? ' selected' : ''}>${esc(v.label)}</option>`).join('')}</select></label>
+    <label>Name<input name="name" required value="${esc(channel ? channel.name : '')}" placeholder="z. B. Handy"></label>
+    <div class="form" id="ch-fields"></div>
+    <div id="ch-preview"></div>
+    <label class="inline"><input type="checkbox" name="enabled"${!channel || channel.enabled ? ' checked' : ''}> Aktiv</label>
+    <div class="actions"><button type="button" class="ghost" id="ch-preview-btn">${icon('search')}Vorschau</button>
+      <button type="submit">${icon('check')}Speichern</button></div></form>`);
+  dlg.classList.add('wide');
+  const form = $('#ch-form', dlg);
+  const update = () => {
+    $('#ch-fields', dlg).innerHTML = fieldsHtml(form.kind.value, channel ? channel.config : {});
+    $('#ch-preview', dlg).innerHTML = '';
+    $('#ch-preview-btn', dlg).hidden = form.kind.value !== 'email';
+  };
+  $('#ch-preview-btn', dlg).addEventListener('click', () => {
+    const sample = { titel: 'Offline: NAS (192.168.1.10)', meldung: 'NAS (192.168.1.10) ist seit 5 Min. nicht erreichbar', schwere: 'Kritisch',
+      geraet: 'NAS', ip: '(192.168.1.10)', regel: 'Server offline', wert: 'seit 5 Min. offline', zeit: new Date().toLocaleString('de-DE').slice(0, -3), link: location.origin + '/#/device/1' };
+    const fill = (t) => t.replace(/\{\{(\w+)\}\}/g, (_, k) => sample[k] ?? '').split('\n')
+      .filter((l) => !(/^[^:]{1,29}:$/.test(l.trim()))).join('\n').trim();
+    const subject = fill(form.elements.cfg_subject.value || form.elements.cfg_subject.placeholder);
+    const body = fill(form.elements.cfg_template.value || form.elements.cfg_template.placeholder);
+    $('#ch-preview', dlg).innerHTML = `<div class="mail-preview"><div class="mail-bar"></div><div class="muted small">Betreff</div><strong>${esc(subject)}</strong>
+      <pre>${esc(body)}</pre></div>`;
+  });
+  form.kind.addEventListener('change', update);
+  update();
+  form.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const config = {};
+    $$('[name^="cfg_"]', form).forEach((el) => {
+      const key = el.name.slice(4);
+      if (el.type === 'checkbox') config[key] = el.checked;
+      else if (key === 'port' || el.type === 'number') config[key] = el.value ? Number(el.value) : null;
+      else config[key] = el.tagName === 'TEXTAREA' ? el.value.replace(/\r/g, '') : el.value.trim();
+    });
+    const body = { name: form.elements.name.value.trim(), kind: form.kind.value, enabled: form.enabled.checked, config };
+    attempt(async () => {
+      const saved = editing ? await api(`/channels/${channel.id}`, { method: 'PATCH', body }) : await api('/channels', { method: 'POST', body });
+      dlg.close();
+      if (onSaved) await onSaved(saved);
+    }, 'Kanal gespeichert – jetzt mit „Test“ prüfen');
+  });
+}
+
 async function viewChannels() {
   const render = async () => {
     const channels = await api('/channels');
@@ -866,8 +941,8 @@ async function viewChannels() {
       : empty('Noch keine Kanäle. Am einfachsten: ntfy (kostenlose Push-App) oder E-Mail.', 'send')}</div>
       <p class="muted small">Wann benachrichtigt wird, legst du unter <a href="#/alerts?tab=rules">Alarme → Regeln</a> fest.</p>`;
     renderSmtp();
-    $('#ch-add').addEventListener('click', () => channelDialog(null));
-    $$('[data-edit]').forEach((b) => b.addEventListener('click', () => channelDialog(channels.find((c) => c.id === Number(b.dataset.edit)))));
+    $('#ch-add').addEventListener('click', () => channelDialog(null, render));
+    $$('[data-edit]').forEach((b) => b.addEventListener('click', () => channelDialog(channels.find((c) => c.id === Number(b.dataset.edit)), render)));
     $$('[data-test]').forEach((b) => b.addEventListener('click', () => {
       b.disabled = true;
       attempt(async () => {
@@ -880,75 +955,6 @@ async function viewChannels() {
       attempt(async () => { await api(`/channels/${b.dataset.del}`, { method: 'DELETE' }); await render(); }, 'Kanal gelöscht');
     }));
   };
-
-  function channelDialog(channel) {
-    const editing = !!channel;
-    const fieldsHtml = (kind, config = {}) => {
-      const def = CHANNEL_KINDS[kind];
-      return [...def.fields, ...DELIVERY_FIELDS].map(([key, label, placeholder, type]) => {
-        if (key.startsWith('-')) return `<h3 class="sub">${esc(label)}</h3>`;
-        const value = config[key] ?? (key === 'server' && !editing ? 'https://ntfy.sh' : '');
-        if (type === 'textarea') {
-          return `<label>${esc(label)}<textarea name="cfg_${key}" rows="6" class="mono" placeholder="${esc(placeholder)}">${esc(value)}</textarea></label>`;
-        }
-        if (type === 'checkbox') {
-          return `<label class="inline"><input type="checkbox" name="cfg_${key}"${(config[key] ?? placeholder) ? ' checked' : ''}> ${esc(label)}</label>`;
-        }
-        if (type === 'number' || type === 'time') {
-          return `<label>${esc(label)}<input name="cfg_${key}" type="${type}" ${type === 'number' ? 'min="0" max="1440"' : ''} value="${esc(value)}" placeholder="${esc(placeholder)}"></label>`;
-        }
-        if (type && type.startsWith('select:')) {
-          const opts = type.slice(7).split(',').map((o) => o.split('='));
-          return `<label>${esc(label)}<select name="cfg_${key}">${opts.map(([v, l]) => `<option value="${v}"${value === v ? ' selected' : ''}>${esc(l)}</option>`).join('')}</select></label>`;
-        }
-        return `<label>${esc(label)}<input name="cfg_${key}" type="${type === 'password' ? 'password' : 'text'}" autocomplete="off" value="${esc(value)}" placeholder="${esc(placeholder)}"></label>`;
-      }).join('') + (def.hint ? `<p class="hint">${esc(def.hint)}</p>` : '');
-    };
-    const dlg = openModal(editing ? 'Kanal bearbeiten' : 'Kanal hinzufügen', `<form class="form" id="ch-form">
-      <label>Art<select name="kind"${editing ? ' disabled' : ''}>${Object.entries(CHANNEL_KINDS).map(([k, v]) => `<option value="${k}"${channel && channel.kind === k ? ' selected' : ''}>${esc(v.label)}</option>`).join('')}</select></label>
-      <label>Name<input name="name" required value="${esc(channel ? channel.name : '')}" placeholder="z. B. Handy"></label>
-      <div class="form" id="ch-fields"></div>
-      <div id="ch-preview"></div>
-      <label class="inline"><input type="checkbox" name="enabled"${!channel || channel.enabled ? ' checked' : ''}> Aktiv</label>
-      <div class="actions"><button type="button" class="ghost" id="ch-preview-btn">${icon('search')}Vorschau</button>
-        <button type="submit">${icon('check')}Speichern</button></div></form>`);
-    dlg.classList.add('wide');
-    const form = $('#ch-form', dlg);
-    const update = () => {
-      $('#ch-fields', dlg).innerHTML = fieldsHtml(form.kind.value, channel ? channel.config : {});
-      $('#ch-preview', dlg).innerHTML = '';
-      $('#ch-preview-btn', dlg).hidden = form.kind.value !== 'email';
-    };
-    $('#ch-preview-btn', dlg).addEventListener('click', () => {
-      const sample = { titel: 'Offline: NAS (192.168.1.10)', meldung: 'NAS (192.168.1.10) ist seit 5 Min. nicht erreichbar', schwere: 'Kritisch',
-        geraet: 'NAS', ip: '(192.168.1.10)', regel: 'Server offline', wert: 'seit 5 Min. offline', zeit: new Date().toLocaleString('de-DE').slice(0, -3), link: location.origin + '/#/device/1' };
-      const fill = (t) => t.replace(/\{\{(\w+)\}\}/g, (_, k) => sample[k] ?? '').split('\n')
-        .filter((l) => !(/^[^:]{1,29}:$/.test(l.trim()))).join('\n').trim();
-      const subject = fill(form.elements.cfg_subject.value || form.elements.cfg_subject.placeholder);
-      const body = fill(form.elements.cfg_template.value || form.elements.cfg_template.placeholder);
-      $('#ch-preview', dlg).innerHTML = `<div class="mail-preview"><div class="mail-bar"></div><div class="muted small">Betreff</div><strong>${esc(subject)}</strong>
-        <pre>${esc(body)}</pre></div>`;
-    });
-    form.kind.addEventListener('change', update);
-    update();
-    form.addEventListener('submit', (ev) => {
-      ev.preventDefault();
-      const config = {};
-      $$('[name^="cfg_"]', form).forEach((el) => {
-        const key = el.name.slice(4);
-        if (el.type === 'checkbox') config[key] = el.checked;
-        else if (key === 'port' || el.type === 'number') config[key] = el.value ? Number(el.value) : null;
-        else config[key] = el.tagName === 'TEXTAREA' ? el.value.replace(/\r/g, '') : el.value.trim();
-      });
-      const body = { name: form.elements.name.value.trim(), kind: form.kind.value, enabled: form.enabled.checked, config };
-      attempt(async () => {
-        if (editing) await api(`/channels/${channel.id}`, { method: 'PATCH', body });
-        else await api('/channels', { method: 'POST', body });
-        dlg.close();
-        await render();
-      }, 'Kanal gespeichert – jetzt mit „Test“ prüfen');
-    });
-  }
 
   await render();
 }

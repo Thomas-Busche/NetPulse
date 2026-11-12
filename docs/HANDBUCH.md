@@ -179,6 +179,22 @@ Port in `SITE_ADDRESS`.
 
 ## 4. Erste Schritte
 
+Nach der ersten Anmeldung startet bei einer neuen Installation automatisch der **Einrichtungs-Assistent**
+(*Verwaltung → Einrichtung*, jederzeit erneut aufrufbar). Er führt in fünf Schritten durch das Wichtigste; jeder
+Schritt lässt sich überspringen:
+
+| Schritt | Was passiert |
+|---|---|
+| **Netz kennenlernen** | NetPulse zeigt die Netze, in denen es selbst eine Adresse hat, samt Router (Gateway). Häkchen setzen, übernehmen – der Scan startet sofort, der Fortschritt läuft live mit. Weitere Netze (z. B. IoT-VLAN) lassen sich direkt ergänzen. |
+| **Router erkennen** | Für jedes Gateway: welcher Router es ist (über 30 Router-Familien von FRITZ!Box, Speedport, Vodafone Station, UniFi, OpenWrt, ASUS, TP-Link bis Cisco, FortiGate, Sophos, LANCOM, DrayTek …) und welche Zugangsart passt, mit kurzer Anleitung. Stimmt die Erkennung nicht, den Router aus der Liste wählen. Unbekannte Router laufen als „Anderer Router“ (SNMP oder SSH). |
+| **Zugangsdaten** (optional) | Zugang für den Router eintragen – die passende Art ist vorausgewählt. NetPulse testet die Anmeldung sofort und ordnet sie bei Erfolg dem Router zu; fehlgeschlagene Zugangsdaten lassen sich direkt verwerfen. Router ohne Schnittstelle (z. B. Speedport) werden ohne Zugang überwacht. |
+| **Benachrichtigung** (optional) | Einen Kanal anlegen (ntfy, E-Mail, Telegram, Discord, Teams, Gotify, Webhook) – NetPulse schickt gleich eine Testnachricht. |
+| **Fertig** | Übersicht: Netze, Geräte nach Typ, Router, Zugangsdaten und Kanäle. |
+
+Bestehende Installationen (mit bereits gefundenen Geräten) sehen den Assistenten nicht automatisch.
+
+Von Hand geht es so:
+
 1. **Anmelden** mit Benutzer `admin` und dem Passwort aus der Installation.
 2. **Eigenes Passwort setzen:** *Mein Konto → Passwort ändern* (mind. 12 Zeichen).
 3. **Zwei-Faktor-Anmeldung einrichten:** *Mein Konto → Zwei-Faktor-Anmeldung → Einrichten*, QR-Code mit einer

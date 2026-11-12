@@ -1002,3 +1002,28 @@ body.kiosk .ls-name { font-size: 20px; }
 body.kiosk .ls-table { font-size: 15px; }
 :fullscreen .sidebar, :fullscreen .topbar { display: none; }
 :fullscreen .shell { grid-template-columns: 1fr; }
+
+/* Einrichtungs-Assistent */
+.wizard > header { margin-bottom: 8px; }
+.wz-steps { display: flex; gap: 6px; list-style: none; padding: 0; margin: 0 0 18px; flex-wrap: wrap; counter-reset: wz; }
+.wz-steps li { flex: 1 1 120px; }
+.wz-steps a { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: var(--radius-sm); border: 1px solid var(--border);
+  color: var(--muted); text-decoration: none; font-size: 13px; background: var(--surface-2); }
+.wz-steps li.current a { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+.wz-steps li.done a { color: var(--up); }
+#wz-body > p:first-child { margin-top: 0; }
+#wz-body .table-wrap, #wz-body > .actions, .wz-manual { margin: 12px 0; }
+.wz-manual { align-items: end; }
+.wz-foot { display: flex; justify-content: space-between; gap: 10px; margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--border); }
+.wz-router { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px; margin: 12px 0; background: var(--surface-2); }
+.wz-router > header { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; align-items: start; }
+.wz-router p { margin: 8px 0 0; }
+.wz-router .notice { margin: 10px 0 0; }
+.wz-family { min-width: 220px; font-size: 13px; }
+.wz-methods { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 8px; }
+.wz-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin: 14px 0; }
+.wz-tile { display: flex; flex-direction: column; gap: 2px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+  text-decoration: none; color: var(--text-2); background: var(--surface-2); }
+.wz-tile b { font-size: 24px; color: var(--text); }
+.wz-types { display: flex; gap: 6px; flex-wrap: wrap; }
+.wz-types a { text-decoration: none; }
