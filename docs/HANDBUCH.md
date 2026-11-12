@@ -1169,6 +1169,7 @@ Frist automatisch gelöscht.
 | `PROXY_LISTEN` | `http://127.0.0.1:18081` | Eingang für einen vorgeschalteten Reverse-Proxy (NPM) |
 | `REQUIRE_TOTP` | `false` | `true` = Zwei-Faktor-Anmeldung für alle Pflicht (fest) |
 | `SESSION_HOURS` | 12 | Gültigkeit einer Anmeldung in Stunden |
+| `COOKIE_SECURE` | automatisch | Anmelde-Cookie nur über HTTPS; ohne Angabe aus, wenn `SITE_ADDRESS` mit `http://` beginnt |
 | `TZ` | `Europe/Berlin` | Zeitzone (Such-Zeitplan, Tageswerte, Sicherungen) |
 | `DISCOVERY_INTERVAL_MIN` | 15 | Vorgabe für den Such-Modus „regelmäßig“ |
 | `MONITOR_INTERVAL_SEC` | 60 | Abstand der Erreichbarkeitsprüfungen |

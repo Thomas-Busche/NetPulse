@@ -263,8 +263,10 @@ async fn reset_password_cli(db: &PgPool, args: &[String]) -> Result<()> {
         anyhow::bail!("Benutzer „{username}“ gibt es nicht");
     }
     sqlx::query("DELETE FROM sessions WHERE user_id = (SELECT id FROM users WHERE username = lower($1))").bind(username).execute(db).await?;
+    // Notfall: auch die Anmeldesperre nach Fehlversuchen aufheben, sonst hilft das neue Passwort erst nach 15 Minuten
+    sqlx::query("DELETE FROM login_attempts").execute(db).await?;
     audit::log(db, None, Some(username), "password_reset_cli", serde_json::json!({ "reset_2fa": reset_2fa })).await;
-    eprintln!("Neues Passwort für „{username}“: {password}");
+    eprintln!("Neues Passwort für „{username}“: {password} (Anmeldesperre aufgehoben)");
     if reset_2fa {
         eprintln!("Zwei-Faktor-Anmeldung wurde zurückgesetzt – bitte nach der Anmeldung neu einrichten.");
     }

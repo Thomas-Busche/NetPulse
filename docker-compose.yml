@@ -66,6 +66,8 @@ services:
       RETENTION_EVENTS_DAYS: ${RETENTION_EVENTS_DAYS:-180}
       RETENTION_AUDIT_DAYS: ${RETENTION_AUDIT_DAYS:-365}
       INVENTORY_INTERVAL_MIN: ${INVENTORY_INTERVAL_MIN:-5}
+      # Adresse im LAN – bei http:// wird das Anmelde-Cookie ohne „Secure“ gesetzt (sonst klappt die Anmeldung nicht)
+      SITE_ADDRESS: ${SITE_ADDRESS:-}
       # Für Links in Benachrichtigungen (Standard: SITE_ADDRESS)
       PUBLIC_URL: ${PUBLIC_URL:-${SITE_ADDRESS:-}}
       # true = alle Benutzer müssen 2FA nutzen (in der Oberfläche nicht abschaltbar); sonst unter Benutzer einstellbar
