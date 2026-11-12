@@ -280,12 +280,18 @@ async fn bootstrap(db: &PgPool, config: &Config) -> Result<()> {
             .clone()
             .unwrap_or_else(|| "admin".into())
             .to_lowercase();
+        // Ein ungültiges Startpasswort soll die App nicht lahmlegen (Neustart-Schleife ohne Anmeldung):
+        // stattdessen ein zufälliges Passwort vergeben und im Container-Log klar sagen, warum.
         let (password, generated) = match &config.initial_admin_password {
-            Some(p) => (p.clone(), false),
+            Some(p) => match auth::validate_password(p) {
+                Ok(()) => (p.clone(), false),
+                Err(e) => {
+                    eprintln!("INITIAL_ADMIN_PASSWORD wird nicht verwendet: {e} – stattdessen zufälliges Passwort (siehe nächste Zeile).");
+                    (auth::random_token(12), true)
+                }
+            },
             None => (auth::random_token(12), true),
         };
-        auth::validate_password(&password)
-            .map_err(|e| anyhow::anyhow!("INITIAL_ADMIN_PASSWORD: {e}"))?;
         let hash = auth::hash_password(password.clone()).await?;
         let (user_id,): (i64,) = sqlx::query_as("INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id")
             .bind(&username)
@@ -303,8 +309,16 @@ async fn bootstrap(db: &PgPool, config: &Config) -> Result<()> {
             // Bewusst nur auf die Konsole (Container-Log), nicht ins System-Log der Oberfläche
             eprintln!("Erster Admin angelegt – Benutzer: '{username}', Passwort: '{password}'. Bitte sofort ändern!");
         } else {
-            tracing::info!("Erster Admin '{username}' angelegt");
+            tracing::info!(
+                "Erster Admin '{username}' mit dem Passwort aus INITIAL_ADMIN_PASSWORD angelegt ({} Zeichen)",
+                password.chars().count()
+            );
         }
+    } else if config.initial_admin_password.is_some() {
+        // Häufige Falle: alte Datenbank (Volume) weiterverwendet – dann gilt das alte Passwort
+        tracing::info!(
+            "INITIAL_ADMIN_PASSWORD wird ignoriert, weil es schon Benutzer gibt. Passwort vergessen? → netpulse reset-password admin"
+        );
     }
 
     let (networks,): (i64,) = sqlx::query_as("SELECT count(*) FROM networks").fetch_one(db).await?;
