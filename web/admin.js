@@ -1119,8 +1119,8 @@ async function renderTotp() {
         if (state.user.totp_setup_required) {
           // Sperre aufheben: App mit vollem Zugriff neu starten
           state.user = await api('/me');
+          location.hash = '#/';
           startApp();
-          location.hash = '#/dashboard';
           return;
         }
         await renderTotp();
@@ -1355,8 +1355,9 @@ async function viewAccount() {
       if (state.user.password_change_required) {
         // Sperre aufheben: App mit vollem Zugriff neu starten (ggf. greift danach noch die 2FA-Pflicht)
         state.user = await api('/me');
+        // Startseite wählen, damit bei einer neuen Installation der Einrichtungs-Assistent startet
+        if (!state.user.totp_setup_required) location.hash = '#/';
         startApp();
-        if (!state.user.totp_setup_required) location.hash = '#/dashboard';
       }
     }, 'Passwort geändert');
   });
