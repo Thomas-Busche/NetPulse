@@ -6,7 +6,7 @@
 #   Compose path:      deploy/portainer-stack.yml
 # Umgebungsvariablen (unten im Formular):
 #   DB_PASSWORD, SITE_ADDRESS (SCAN_NETWORKS optional – leer = eigenes Netz automatisch erkennen)
-# Erste Anmeldung: admin / NetPulse-Admin – danach muss ein eigenes Passwort gesetzt werden.
+# Erste Anmeldung: admin / Admin123! – danach muss ein eigenes Passwort gesetzt werden.
 # Details: siehe README, Abschnitt „Installation mit Portainer“.
 
 services:
@@ -52,8 +52,6 @@ services:
       DATABASE_URL: postgres://netpulse:${DB_PASSWORD}@127.0.0.1:${DB_PORT:-5433}/netpulse
       LISTEN_ADDR: 127.0.0.1:${APP_PORT:-18080}
       SCAN_NETWORKS: ${SCAN_NETWORKS:-}
-      INITIAL_ADMIN_USER: ${INITIAL_ADMIN_USER:-admin}
-      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
       DISCOVERY_INTERVAL_MIN: ${DISCOVERY_INTERVAL_MIN:-15}
       # Zeitzone für den Such-Zeitplan (z. B. „täglich 03:00“)
       TZ: ${TZ:-Europe/Berlin}

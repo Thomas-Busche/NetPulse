@@ -275,30 +275,15 @@ async fn reset_password_cli(db: &PgPool, args: &[String]) -> Result<()> {
 async fn bootstrap(db: &PgPool, config: &Config) -> Result<()> {
     let (users,): (i64,) = sqlx::query_as("SELECT count(*) FROM users").fetch_one(db).await?;
     if users == 0 {
-        let username = config
-            .initial_admin_user
-            .clone()
-            .unwrap_or_else(|| "admin".into())
-            .to_lowercase();
-        // Ohne (gültiges) INITIAL_ADMIN_PASSWORD gilt das Standardkennwort aus dem Handbuch;
-        // es muss nach der ersten Anmeldung geändert werden.
-        let (password, is_default) = match &config.initial_admin_password {
-            Some(p) => match auth::validate_password(p) {
-                Ok(()) => (p.clone(), false),
-                Err(e) => {
-                    tracing::warn!("INITIAL_ADMIN_PASSWORD wird nicht verwendet: {e} – es gilt das Standardkennwort");
-                    (auth::DEFAULT_ADMIN_PASSWORD.to_string(), true)
-                }
-            },
-            None => (auth::DEFAULT_ADMIN_PASSWORD.to_string(), true),
-        };
-        let hash = auth::hash_password(password.clone()).await?;
+        // Feste Erst-Anmeldung (steht im Handbuch); das Passwort muss danach geändert werden
+        let username = auth::DEFAULT_ADMIN_USER;
+        let hash = auth::hash_password(auth::DEFAULT_ADMIN_PASSWORD.to_string()).await?;
         let (user_id,): (i64,) = sqlx::query_as(
             "INSERT INTO users (username, password_hash, must_change_password) VALUES ($1, $2, $3) RETURNING id",
         )
-        .bind(&username)
+        .bind(username)
         .bind(hash)
-        .bind(is_default)
+        .bind(true)
         .fetch_one(db)
         .await?;
         sqlx::query(
@@ -308,21 +293,7 @@ async fn bootstrap(db: &PgPool, config: &Config) -> Result<()> {
         .bind(user_id)
         .execute(db)
         .await?;
-        if is_default {
-            tracing::info!(
-                "Erster Admin '{username}' mit dem Standardkennwort angelegt (siehe Handbuch) – wird nach der ersten Anmeldung geändert"
-            );
-        } else {
-            tracing::info!(
-                "Erster Admin '{username}' mit dem Passwort aus INITIAL_ADMIN_PASSWORD angelegt ({} Zeichen)",
-                password.chars().count()
-            );
-        }
-    } else if config.initial_admin_password.is_some() {
-        // Häufige Falle: alte Datenbank (Volume) weiterverwendet – dann gilt das alte Passwort
-        tracing::info!(
-            "INITIAL_ADMIN_PASSWORD wird ignoriert, weil es schon Benutzer gibt. Passwort vergessen? → netpulse reset-password admin"
-        );
+        tracing::info!("Erster Admin '{username}' mit dem Standardkennwort angelegt (siehe Handbuch) – muss nach der ersten Anmeldung geändert werden");
     }
 
     let (networks,): (i64,) = sqlx::query_as("SELECT count(*) FROM networks").fetch_one(db).await?;

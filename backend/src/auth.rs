@@ -42,9 +42,10 @@ const CSRF_HEADER: &str = "x-netpulse-csrf";
 // Passwörter
 // ---------------------------------------------------------------------------
 
-/// Kennwort des ersten Admins, wenn kein INITIAL_ADMIN_PASSWORD gesetzt ist (steht im Handbuch).
+/// Erst-Anmeldung einer neuen Installation (steht im Handbuch).
 /// Gilt nur bis zur ersten Anmeldung – danach muss ein eigenes Passwort gesetzt werden.
-pub const DEFAULT_ADMIN_PASSWORD: &str = "NetPulse-Admin";
+pub const DEFAULT_ADMIN_USER: &str = "admin";
+pub const DEFAULT_ADMIN_PASSWORD: &str = "Admin123!";
 
 pub fn validate_password(password: &str) -> Result<(), String> {
     if password.chars().count() < 12 {

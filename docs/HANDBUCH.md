@@ -138,10 +138,9 @@ Fertige Images für Intel/AMD und ARM (Raspberry Pi) baut GitHub bei jeder Ände
    Alle weiteren Variablen stehen im [Anhang](#29-anhang-umgebungsvariablen-ports-aufbewahrung).
 4. **Deploy the stack**. Nach etwa einer Minute ist NetPulse unter `SITE_ADDRESS` erreichbar.
 
-**Erste Anmeldung:** Benutzer `admin`, Passwort **`NetPulse-Admin`**. Direkt danach verlangt NetPulse ein eigenes Passwort
+**Erste Anmeldung:** Benutzer `admin`, Passwort **`Admin123!`**. Direkt danach verlangt NetPulse ein eigenes Passwort
 (mind. 12 Zeichen); bis dahin ist nur *Mein Konto* erreichbar. Das Standardkennwort gilt nur, solange die Datenbank leer ist
-(neues Volume). Wer das erste Passwort lieber selbst vorgibt, setzt optional `INITIAL_ADMIN_PASSWORD` (mind. 12 Zeichen,
-**kein `$`** – Compose wertet es aus).
+(neues Volume).
 
 ### 3.2 Mit Docker Compose (ohne Portainer)
 
@@ -152,7 +151,7 @@ cp .env.example .env        # DB_PASSWORD und SITE_ADDRESS eintragen (SCAN_NETWO
 docker compose up -d
 ```
 
-Erste Anmeldung wie oben: `admin` / `NetPulse-Admin`, danach eigenes Passwort setzen.
+Erste Anmeldung wie oben: `admin` / `Admin123!`, danach eigenes Passwort setzen.
 
 ### 3.3 Browser-Warnung zum Zertifikat
 
@@ -195,7 +194,7 @@ Bestehende Installationen (mit bereits gefundenen Geräten) sehen den Assistente
 
 Von Hand geht es so:
 
-1. **Anmelden** mit Benutzer `admin` und Passwort `NetPulse-Admin` (bzw. dem `INITIAL_ADMIN_PASSWORD`).
+1. **Anmelden** mit Benutzer `admin` und Passwort `Admin123!`.
 2. **Eigenes Passwort setzen:** NetPulse führt beim Standardkennwort direkt zu *Mein Konto → Passwort ändern* (mind. 12 Zeichen).
 3. **Zwei-Faktor-Anmeldung einrichten:** *Mein Konto → Zwei-Faktor-Anmeldung → Einrichten*, QR-Code mit einer
    Authenticator-App scannen (Google/Microsoft Authenticator, Aegis, 2FAS, Bitwarden …), Code eingeben.
@@ -1166,7 +1165,6 @@ Frist automatisch gelöscht.
 | `DB_PASSWORD` | – (Pflicht) | Passwort der Datenbank (nur Buchstaben und Ziffern) |
 | `SITE_ADDRESS` | – (Pflicht) | Adresse der Weboberfläche im LAN, z. B. `https://192.168.1.10:8443` |
 | `SCAN_NETWORKS` | `auto` | Netze beim ersten Start (Komma-getrennt); leer/`auto` = angeschlossene Netze automatisch erkennen, kombinierbar (`auto,10.0.10.0/24`), `off` = keine |
-| `INITIAL_ADMIN_USER` / `INITIAL_ADMIN_PASSWORD` | `admin` / `NetPulse-Admin` (muss nach der ersten Anmeldung geändert werden) | erstes Admin-Konto (nur beim allerersten Start) |
 | `PUBLIC_URL` | = `SITE_ADDRESS` | Adresse für Links in Benachrichtigungen und für Push (z. B. `https://monitoring.example.de`) |
 | `PROXY_LISTEN` | `http://127.0.0.1:18081` | Eingang für einen vorgeschalteten Reverse-Proxy (NPM) |
 | `REQUIRE_TOTP` | `false` | `true` = Zwei-Faktor-Anmeldung für alle Pflicht (fest) |

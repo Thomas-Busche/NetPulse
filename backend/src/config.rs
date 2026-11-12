@@ -17,8 +17,6 @@ pub struct Config {
     pub metrics_retention_days: i32,
     pub events_retention_days: i32,
     pub audit_retention_days: i32,
-    pub initial_admin_user: Option<String>,
-    pub initial_admin_password: Option<String>,
     pub initial_networks: Vec<String>,
     /// Ablage für den Tresor-Schlüssel (Docker-Volume)
     pub data_dir: String,
@@ -56,8 +54,6 @@ impl Config {
             metrics_retention_days: number("RETENTION_METRICS_DAYS", 90)?,
             events_retention_days: number("RETENTION_EVENTS_DAYS", 180)?,
             audit_retention_days: number("RETENTION_AUDIT_DAYS", 365)?,
-            initial_admin_user: optional("INITIAL_ADMIN_USER"),
-            initial_admin_password: optional("INITIAL_ADMIN_PASSWORD"),
             initial_networks: optional("SCAN_NETWORKS")
                 .map(|s| s.split(',').map(|n| n.trim().to_string()).filter(|n| !n.is_empty()).collect())
                 .unwrap_or_default(),
