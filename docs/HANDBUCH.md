@@ -123,7 +123,7 @@ Fertige Images für Intel/AMD und ARM (Raspberry Pi) baut GitHub bei jeder Ände
 
    | Feld | Wert |
    |---|---|
-   | Repository URL | `https://github.com/Sirbuschi2003/NetPulse` |
+   | Repository URL | `https://github.com/Thomas-Busche/NetPulse` |
    | Repository reference | `refs/heads/main` |
    | Compose path | `deploy/portainer-stack.yml` |
 
@@ -142,7 +142,7 @@ Fertige Images für Intel/AMD und ARM (Raspberry Pi) baut GitHub bei jeder Ände
 ### 3.2 Mit Docker Compose (ohne Portainer)
 
 ```bash
-git clone https://github.com/Sirbuschi2003/NetPulse.git
+git clone https://github.com/Thomas-Busche/NetPulse.git
 cd NetPulse
 cp .env.example .env        # DB_PASSWORD und SITE_ADDRESS eintragen (SCAN_NETWORKS optional)
 docker compose up -d
@@ -1048,8 +1048,8 @@ Live-Stream funktioniert ohne weitere Einstellungen.
 **Image-Signatur prüfen:**
 
 ```bash
-cosign verify ghcr.io/sirbuschi2003/netpulse:latest \
-  --certificate-identity-regexp 'https://github.com/Sirbuschi2003/NetPulse/' \
+cosign verify ghcr.io/thomas-busche/netpulse:latest \
+  --certificate-identity-regexp 'https://github.com/Thomas-Busche/NetPulse/' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com
 ```
 

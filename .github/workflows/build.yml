@@ -1,7 +1,7 @@
 # Prüft den Code bei jeder Änderung und baut fertige Docker-Images für PC/NAS (amd64)
 # und Raspberry Pi (arm64). Die Images landen in der GitHub Container Registry:
-#   ghcr.io/sirbuschi2003/netpulse        – die Anwendung
-#   ghcr.io/sirbuschi2003/netpulse-proxy  – Caddy mit fertiger HTTPS-Konfiguration
+#   ghcr.io/thomas-busche/netpulse        – die Anwendung
+#   ghcr.io/thomas-busche/netpulse-proxy  – Caddy mit fertiger HTTPS-Konfiguration
 
 name: Build
 

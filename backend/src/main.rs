@@ -108,7 +108,7 @@ async fn main() -> Result<()> {
         .public_url
         .clone()
         .filter(|u| u.starts_with("https://"))
-        .unwrap_or_else(|| "https://github.com/Sirbuschi2003/NetPulse".into());
+        .unwrap_or_else(|| "https://github.com/Thomas-Busche/NetPulse".into());
     let vapid = push::Vapid::load_or_create(std::path::Path::new(&config.data_dir), vapid_subject)
         .context("Push-Schlüssel (vapid.key) konnte nicht angelegt werden")?;
     let (scan_tx, scan_rx) = mpsc::unbounded_channel();
