@@ -136,12 +136,15 @@ pub async fn change_password(
         .bind(user.id)
         .fetch_one(&st.db)
         .await?;
+    if req.new_password == req.old_password {
+        return Err(ApiError::BadRequest("Das neue Passwort muss sich vom bisherigen unterscheiden".into()));
+    }
     if !auth::verify_password(req.old_password, hash).await {
         return Err(ApiError::BadRequest("Aktuelles Passwort ist falsch".into()));
     }
 
     let new_hash = auth::hash_password(req.new_password).await?;
-    sqlx::query("UPDATE users SET password_hash = $2 WHERE id = $1")
+    sqlx::query("UPDATE users SET password_hash = $2, must_change_password = false WHERE id = $1")
         .bind(user.id)
         .bind(new_hash)
         .execute(&st.db)

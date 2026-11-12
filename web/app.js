@@ -40,6 +40,9 @@ async function api(path, { method = 'GET', body, retried = false } = {}) {
     // 2FA wurde inzwischen zur Pflicht gemacht: App neu starten, dann greift die Sperre
     location.reload();
   }
+  if (res.status === 403 && data && data.password_change_required && state.user && !state.user.password_change_required) {
+    location.reload();
+  }
   if (res.status === 403 && data && data.reauth_required && !retried) {
     // Kritische Aktion: Passwort (und ggf. Code) erneut abfragen, dann einmal wiederholen
     if (await reauthDialog()) return api(path, { method, body, retried: true });
@@ -1647,7 +1650,7 @@ async function route() {
   $('#sidebar').classList.remove('open');
   const [path, query] = location.hash.replace(/^#\/?/, '').split('?');
   const [name, arg] = path.split('/');
-  const key = state.user.totp_setup_required ? 'account' : ROUTES[name] ? name : 'dashboard';
+  const key = (state.user.totp_setup_required || state.user.password_change_required) ? 'account' : ROUTES[name] ? name : 'dashboard';
   const r = ROUTES[key];
   $('#page-title').textContent = r.title;
   document.title = `${r.title} · NetPulse`;
@@ -1765,8 +1768,10 @@ function startApp() {
   $$('#nav [data-perm]').forEach((el) => { el.hidden = !el.dataset.perm.split(' ').some((p) => canAny(p)); });
   $('#user-name').textContent = state.user.display_name || state.user.username;
   // 2FA ist Pflicht, fehlt aber noch: nur „Mein Konto“ zeigen, bis sie eingerichtet ist
-  document.body.classList.toggle('totp-lock', !!state.user.totp_setup_required);
-  if (state.user.totp_setup_required) {
+  // Gleiches gilt, solange noch das Standard- oder Notfall-Kennwort gilt
+  const locked = !!(state.user.totp_setup_required || state.user.password_change_required);
+  document.body.classList.toggle('totp-lock', locked);
+  if (locked) {
     if (location.hash !== '#/account') location.hash = '#/account';
     else route();
     return;

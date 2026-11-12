@@ -42,6 +42,11 @@ const CSRF_HEADER: &str = "x-netpulse-csrf";
 // Passwörter
 // ---------------------------------------------------------------------------
 
+/// Erst-Anmeldung einer neuen Installation (steht im Handbuch).
+/// Gilt nur bis zur ersten Anmeldung – danach muss ein eigenes Passwort gesetzt werden.
+pub const DEFAULT_ADMIN_USER: &str = "admin";
+pub const DEFAULT_ADMIN_PASSWORD: &str = "Admin123!";
+
 pub fn validate_password(password: &str) -> Result<(), String> {
     if password.chars().count() < 12 {
         return Err("Passwort muss mindestens 12 Zeichen lang sein".into());
@@ -350,6 +355,8 @@ pub struct CurrentUser {
     pub roles: Vec<String>,
     /// 2FA ist Pflicht, aber noch nicht eingerichtet → nur „Mein Konto“ ist erreichbar
     pub totp_setup_required: bool,
+    /// Anmeldung mit Standard- oder Notfall-Kennwort → erst ein eigenes Passwort setzen
+    pub password_change_required: bool,
     pub permissions: Perms,
     /// Leitstand-Bildschirm (Sitzung über API-Schlüssel) – keine kritischen Aktionen
     pub kiosk: bool,
@@ -447,13 +454,13 @@ pub fn bearer_token(headers: &HeaderMap) -> Option<String> {
 
 /// Benutzer zu einer Sitzung (Cookie) oder einem API-Schlüssel laden
 pub async fn user_from_headers(state: &AppState, headers: &HeaderMap) -> Result<Option<CurrentUser>, ApiError> {
-    type Row = (i64, String, Option<String>, bool, bool);
+    type Row = (i64, String, Option<String>, bool, bool, bool);
     let (row, api_token, session_hash): (Option<Row>, bool, Option<Vec<u8>>) = if let Some(token) = bearer_token(headers) {
         let hash = token_hash(&token);
         let row: Option<Row> = sqlx::query_as(
             "UPDATE api_tokens t SET last_used = now() FROM users u
               WHERE t.token_hash = $1 AND u.id = t.user_id AND NOT u.disabled AND (t.expires_at IS NULL OR t.expires_at > now())
-              RETURNING u.id, u.username, u.display_name, false, false",
+              RETURNING u.id, u.username, u.display_name, false, false, false",
         )
         .bind(&hash)
         .fetch_optional(&state.db)
@@ -466,7 +473,8 @@ pub async fn user_from_headers(state: &AppState, headers: &HeaderMap) -> Result<
             "SELECT u.id, u.username, u.display_name,
                     (NOT u.totp_enabled AND u.auth_source = 'local' AND NOT s.kiosk
                          AND ($2 OR COALESCE((SELECT (value->>'require_totp')::bool FROM settings WHERE key = 'security'), false))),
-                    s.kiosk
+                    s.kiosk,
+                    (u.must_change_password AND NOT s.kiosk)
                FROM sessions s JOIN users u ON u.id = s.user_id
               WHERE s.token_hash = $1 AND s.expires_at > now() AND NOT u.disabled",
         )
@@ -476,7 +484,7 @@ pub async fn user_from_headers(state: &AppState, headers: &HeaderMap) -> Result<
         .await?;
         (row, false, Some(hash))
     };
-    let Some((id, username, display_name, totp_setup_required, kiosk)) = row else { return Ok(None) };
+    let Some((id, username, display_name, totp_setup_required, kiosk, password_change_required)) = row else { return Ok(None) };
     let (mut permissions, roles) = load_perms(&state.db, id).await?;
     if kiosk {
         // Leitstand-Bildschirm: nur ansehen, egal welche Rechte der Benutzer sonst hat
@@ -489,6 +497,7 @@ pub async fn user_from_headers(state: &AppState, headers: &HeaderMap) -> Result<
         role: summary_role(&roles, &permissions),
         roles,
         totp_setup_required,
+        password_change_required,
         permissions,
         kiosk,
         api_token,
@@ -504,6 +513,9 @@ impl FromRequestParts<AppState> for CurrentUser {
             return Ok(user.clone());
         }
         let user = user_from_headers(state, &parts.headers).await?.ok_or(ApiError::Unauthorized)?;
+        if user.password_change_required && !allowed_without_totp(parts.uri.path()) {
+            return Err(ApiError::PasswordChangeRequired);
+        }
         if user.totp_setup_required && !allowed_without_totp(parts.uri.path()) {
             return Err(ApiError::TotpSetupRequired);
         }

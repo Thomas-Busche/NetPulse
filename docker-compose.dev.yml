@@ -34,8 +34,6 @@ services:
       DATABASE_URL: postgres://netpulse:${DB_PASSWORD:-dev-only-password}@db:5432/netpulse
       LISTEN_ADDR: 0.0.0.0:8080
       SCAN_NETWORKS: ${SCAN_NETWORKS:-}
-      INITIAL_ADMIN_USER: ${INITIAL_ADMIN_USER:-admin}
-      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
       DISCOVERY_INTERVAL_MIN: ${DISCOVERY_INTERVAL_MIN:-15}
       # Zeitzone für den Such-Zeitplan (z. B. „täglich 03:00“)
       TZ: ${TZ:-Europe/Berlin}

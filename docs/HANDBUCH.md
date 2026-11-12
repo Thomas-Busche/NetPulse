@@ -134,10 +134,13 @@ Fertige Images für Intel/AMD und ARM (Raspberry Pi) baut GitHub bei jeder Ände
    | `DB_PASSWORD` | `8f3a…` (lang, zufällig) | Passwort der Datenbank – nur Buchstaben und Ziffern, z. B. aus `openssl rand -hex 24` |
    | `SITE_ADDRESS` | `https://192.168.1.10:8443` | Adresse, unter der du NetPulse im LAN öffnest (IP des Hosts + Port) |
    | `SCAN_NETWORKS` | leer | Netze, die beim ersten Start freigegeben werden (später in der Oberfläche änderbar). Leer = das Netz des Hosts samt Router automatisch erkennen |
-   | `INITIAL_ADMIN_PASSWORD` | mind. 12 Zeichen | Passwort des ersten Admins `admin` |
 
    Alle weiteren Variablen stehen im [Anhang](#29-anhang-umgebungsvariablen-ports-aufbewahrung).
 4. **Deploy the stack**. Nach etwa einer Minute ist NetPulse unter `SITE_ADDRESS` erreichbar.
+
+**Erste Anmeldung:** Benutzer `admin`, Passwort **`Admin123!`**. Direkt danach verlangt NetPulse ein eigenes Passwort
+(mind. 12 Zeichen); bis dahin ist nur *Mein Konto* erreichbar. Das Standardkennwort gilt nur, solange die Datenbank leer ist
+(neues Volume).
 
 ### 3.2 Mit Docker Compose (ohne Portainer)
 
@@ -148,11 +151,7 @@ cp .env.example .env        # DB_PASSWORD und SITE_ADDRESS eintragen (SCAN_NETWO
 docker compose up -d
 ```
 
-Ohne `INITIAL_ADMIN_PASSWORD` erzeugt NetPulse ein zufälliges Passwort und schreibt es **nur ins Container-Log**:
-
-```bash
-docker compose logs app | grep Passwort
-```
+Erste Anmeldung wie oben: `admin` / `Admin123!`, danach eigenes Passwort setzen.
 
 ### 3.3 Browser-Warnung zum Zertifikat
 
@@ -195,8 +194,8 @@ Bestehende Installationen (mit bereits gefundenen Geräten) sehen den Assistente
 
 Von Hand geht es so:
 
-1. **Anmelden** mit Benutzer `admin` und dem Passwort aus der Installation.
-2. **Eigenes Passwort setzen:** *Mein Konto → Passwort ändern* (mind. 12 Zeichen).
+1. **Anmelden** mit Benutzer `admin` und Passwort `Admin123!`.
+2. **Eigenes Passwort setzen:** NetPulse führt beim Standardkennwort direkt zu *Mein Konto → Passwort ändern* (mind. 12 Zeichen).
 3. **Zwei-Faktor-Anmeldung einrichten:** *Mein Konto → Zwei-Faktor-Anmeldung → Einrichten*, QR-Code mit einer
    Authenticator-App scannen (Google/Microsoft Authenticator, Aegis, 2FAS, Bitwarden …), Code eingeben.
    **Pflicht, bevor NetPulse aus dem Internet erreichbar ist.**
@@ -936,7 +935,7 @@ Anmeldung vorübergehend gesperrt. Sitzungen laufen nach `SESSION_HOURS` (Standa
 docker exec -it netpulse-app netpulse reset-password admin
 ```
 
-Das setzt ein neues zufälliges Passwort (wird angezeigt) und beendet alle Sitzungen. Mit `--2fa` am Ende wird zusätzlich
+Das setzt ein neues zufälliges Passwort (wird angezeigt), das nach der Anmeldung geändert werden muss, und beendet alle Sitzungen. Mit `--2fa` am Ende wird zusätzlich
 die Zwei-Faktor-Anmeldung zurückgesetzt. Ohne Benutzernamen listet der Befehl alle Benutzer. Das geht nur mit Zugriff
 auf den Docker-Host (Portainer: Container `netpulse-app` → *Console* → Befehl ohne `docker exec -it netpulse-app`).
 
@@ -1166,7 +1165,6 @@ Frist automatisch gelöscht.
 | `DB_PASSWORD` | – (Pflicht) | Passwort der Datenbank (nur Buchstaben und Ziffern) |
 | `SITE_ADDRESS` | – (Pflicht) | Adresse der Weboberfläche im LAN, z. B. `https://192.168.1.10:8443` |
 | `SCAN_NETWORKS` | `auto` | Netze beim ersten Start (Komma-getrennt); leer/`auto` = angeschlossene Netze automatisch erkennen, kombinierbar (`auto,10.0.10.0/24`), `off` = keine |
-| `INITIAL_ADMIN_USER` / `INITIAL_ADMIN_PASSWORD` | `admin` / zufällig | erstes Admin-Konto (nur beim allerersten Start) |
 | `PUBLIC_URL` | = `SITE_ADDRESS` | Adresse für Links in Benachrichtigungen und für Push (z. B. `https://monitoring.example.de`) |
 | `PROXY_LISTEN` | `http://127.0.0.1:18081` | Eingang für einen vorgeschalteten Reverse-Proxy (NPM) |
 | `REQUIRE_TOTP` | `false` | `true` = Zwei-Faktor-Anmeldung für alle Pflicht (fest) |

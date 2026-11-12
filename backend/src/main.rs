@@ -248,7 +248,7 @@ async fn reset_password_cli(db: &PgPool, args: &[String]) -> Result<()> {
     let password = auth::random_token(12);
     let hash = auth::hash_password(password.clone()).await?;
     let updated = sqlx::query(
-        "UPDATE users SET password_hash = $2,
+        "UPDATE users SET password_hash = $2, must_change_password = true,
                 totp_enabled = CASE WHEN $3 THEN false ELSE totp_enabled END,
                 totp_secret = CASE WHEN $3 THEN NULL ELSE totp_secret END,
                 totp_last_step = CASE WHEN $3 THEN NULL ELSE totp_last_step END
@@ -268,36 +268,24 @@ async fn reset_password_cli(db: &PgPool, args: &[String]) -> Result<()> {
     if reset_2fa {
         eprintln!("Zwei-Faktor-Anmeldung wurde zurückgesetzt – bitte nach der Anmeldung neu einrichten.");
     }
-    eprintln!("Bitte nach der Anmeldung unter „Mein Konto“ ein eigenes Passwort setzen.");
+    eprintln!("Nach der Anmeldung muss unter „Mein Konto“ ein eigenes Passwort gesetzt werden.");
     Ok(())
 }
 
 async fn bootstrap(db: &PgPool, config: &Config) -> Result<()> {
     let (users,): (i64,) = sqlx::query_as("SELECT count(*) FROM users").fetch_one(db).await?;
     if users == 0 {
-        let username = config
-            .initial_admin_user
-            .clone()
-            .unwrap_or_else(|| "admin".into())
-            .to_lowercase();
-        // Ein ungültiges Startpasswort soll die App nicht lahmlegen (Neustart-Schleife ohne Anmeldung):
-        // stattdessen ein zufälliges Passwort vergeben und im Container-Log klar sagen, warum.
-        let (password, generated) = match &config.initial_admin_password {
-            Some(p) => match auth::validate_password(p) {
-                Ok(()) => (p.clone(), false),
-                Err(e) => {
-                    eprintln!("INITIAL_ADMIN_PASSWORD wird nicht verwendet: {e} – stattdessen zufälliges Passwort (siehe nächste Zeile).");
-                    (auth::random_token(12), true)
-                }
-            },
-            None => (auth::random_token(12), true),
-        };
-        let hash = auth::hash_password(password.clone()).await?;
-        let (user_id,): (i64,) = sqlx::query_as("INSERT INTO users (username, password_hash) VALUES ($1, $2) RETURNING id")
-            .bind(&username)
-            .bind(hash)
-            .fetch_one(db)
-            .await?;
+        // Feste Erst-Anmeldung (steht im Handbuch); das Passwort muss danach geändert werden
+        let username = auth::DEFAULT_ADMIN_USER;
+        let hash = auth::hash_password(auth::DEFAULT_ADMIN_PASSWORD.to_string()).await?;
+        let (user_id,): (i64,) = sqlx::query_as(
+            "INSERT INTO users (username, password_hash, must_change_password) VALUES ($1, $2, $3) RETURNING id",
+        )
+        .bind(username)
+        .bind(hash)
+        .bind(true)
+        .fetch_one(db)
+        .await?;
         sqlx::query(
             "INSERT INTO role_assignments (role_id, user_id, site_id)
              SELECT id, $1, NULL FROM roles WHERE all_permissions ORDER BY id LIMIT 1",
@@ -305,20 +293,7 @@ async fn bootstrap(db: &PgPool, config: &Config) -> Result<()> {
         .bind(user_id)
         .execute(db)
         .await?;
-        if generated {
-            // Bewusst nur auf die Konsole (Container-Log), nicht ins System-Log der Oberfläche
-            eprintln!("Erster Admin angelegt – Benutzer: '{username}', Passwort: '{password}'. Bitte sofort ändern!");
-        } else {
-            tracing::info!(
-                "Erster Admin '{username}' mit dem Passwort aus INITIAL_ADMIN_PASSWORD angelegt ({} Zeichen)",
-                password.chars().count()
-            );
-        }
-    } else if config.initial_admin_password.is_some() {
-        // Häufige Falle: alte Datenbank (Volume) weiterverwendet – dann gilt das alte Passwort
-        tracing::info!(
-            "INITIAL_ADMIN_PASSWORD wird ignoriert, weil es schon Benutzer gibt. Passwort vergessen? → netpulse reset-password admin"
-        );
+        tracing::info!("Erster Admin '{username}' mit dem Standardkennwort angelegt (siehe Handbuch) – muss nach der ersten Anmeldung geändert werden");
     }
 
     let (networks,): (i64,) = sqlx::query_as("SELECT count(*) FROM networks").fetch_one(db).await?;
