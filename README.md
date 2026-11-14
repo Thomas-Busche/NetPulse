@@ -1,4 +1,8 @@
+<img src="docs/buschehome-logo.png" alt="BuscheHome" width="96" align="right">
+
 # NetPulse – agentenloses Netzwerk-Monitoring
+
+*Ein Projekt von **BuscheHome**.*
 
 NetPulse findet automatisch alle Geräte in deinen Netzen und prüft sie laufend auf Erreichbarkeit.
 Die Ergebnisse zeigt ein konfigurierbares Web-Dashboard. Auf den Zielgeräten muss **nichts
@@ -310,3 +314,11 @@ docker-compose.yml  Produktivbetrieb (Host-Netzwerk)
 docker-compose.dev.yml  Test unter Windows/macOS
 Caddyfile           HTTPS und Sicherheits-Header
 ```
+
+## Marke und Logo
+
+Name und Logo **„BuscheHome“** (`web/buschehome.png`, `docs/buschehome-logo.png`) sind das Markenzeichen
+von Thomas Busche. Sie stehen **nicht** unter der Lizenz des Quellcodes: Der Code darf im Rahmen seiner
+Lizenz verwendet und verändert werden, das Logo aber nur unverändert, um auf die Herkunft von NetPulse
+hinzuweisen. Wer eine eigene, veränderte Fassung verbreitet, entfernt bitte das Logo bzw. ersetzt es durch
+ein eigenes. Einzelheiten stehen in [TRADEMARK.md](TRADEMARK.md).

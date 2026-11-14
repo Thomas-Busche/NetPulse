@@ -1554,7 +1554,8 @@ function showLogin() {
       <button type="submit">Leitstand öffnen</button>
       <p class="error" id="kiosk-error"></p>
       <button type="button" class="link-btn" id="kiosk-back">Zurück zur normalen Anmeldung</button>
-    </form></div>`;
+    </form>
+    <div class="maker maker-login"><img src="buschehome.png" alt="BuscheHome-Logo" width="40" height="40"><span>ein Projekt von <b>BuscheHome</b></span></div></div>`;
   const toggleKiosk = (on) => { $('#login-form').hidden = on; $('#kiosk-form').hidden = !on; };
   // Zentrale Anmeldung: Knopf nur, wenn eingerichtet; Fehler kommen per Rücksprung als #sso-error=…
   if (ssoError) $('#login-error').textContent = ssoError;
