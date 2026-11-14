@@ -3,6 +3,9 @@ name = "netpulse"
 version = "0.1.0"
 edition = "2021"
 description = "Agentenloses Netzwerk-Monitoring mit Weboberfläche"
+authors = ["Thomas Busche (BuscheHome)"]
+license = "AGPL-3.0-or-later"
+repository = "https://github.com/Thomas-Busche/NetPulse"
 publish = false
 
 [dependencies]
