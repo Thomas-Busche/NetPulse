@@ -299,7 +299,8 @@ const statusBadge = (d) =>
     : d.paused ? `<span class="badge paused" title="Überwachung pausiert – ${esc(d.paused)}"><span class="dot unknown"></span>pausiert</span>`
     : `<span class="badge st-${esc(d.status)}"><span class="dot ${esc(d.status)}"></span>${esc(STATUS_LABEL[d.status] || d.status)}</span>`;
 const EVENT_LABEL = { up: 'online', down: 'offline', discovered: 'neu', added: 'angelegt', mac_changed: 'MAC geändert', ssh_key_changed: 'SSH-Schlüssel',
-  check_down: 'Dienst aus', check_up: 'Dienst ok', check_warn: 'Dienst-Warnung', job_failed: 'Backup-Fehler' };
+  check_down: 'Dienst aus', check_up: 'Dienst ok', check_warn: 'Dienst-Warnung', job_failed: 'Backup-Fehler',
+  power_wake: 'Aufwecken', power_shutdown: 'Herunterfahren' };
 const eventBadge = (kind) => `<span class="badge ev-${esc(kind)}">${esc(EVENT_LABEL[kind] || kind)}</span>`;
 const deviceLabel = (d) => d.name || d.reported_name || d.hostname || d.ip;
 
@@ -1611,6 +1612,7 @@ const ROUTES = {
   checks: { title: 'Dienste', view: () => viewChecks() },
   map: { title: 'Netzwerkkarte', view: () => viewMap() },
   energy: { title: 'Energie', view: (a, p) => viewEnergy(a, p) },
+  power: { title: 'Ein/Aus', view: () => viewPower() },
   syslog: { title: 'Protokolle', view: (a, p) => viewSyslog(a, p), perm: 'devices.diagnose' },
   statuspage: { title: 'Statusseite', view: () => viewStatusPage(), perm: 'settings.manage' },
   setup: { title: 'Einrichtung', view: (a, p) => viewSetup(a, p), perm: 'networks.manage' },

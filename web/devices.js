@@ -427,7 +427,7 @@ async function viewDevice(id) {
               ${d.os ? `<span class="badge plain">${esc(d.os)}</span>` : ''}
               ${d.model ? `<span class="badge plain">${esc(d.model)}</span>` : ''}</div></div>
           <div class="actions"><a href="#/devices" class="btn ghost">${icon('chevron-left', 'i-sm')} Alle Geräte</a>
-            ${canDev('devices.manage') ? `<button type="button" id="poll-now" class="ghost">${icon('refresh')}Jetzt abfragen</button>` : ''}</div>
+            ${canDev('devices.manage') ? `<button type="button" id="poll-now" class="ghost">${icon('refresh')}Jetzt abfragen</button>${powerHeroButtons(d)}` : ''}</div>
         </div>
         <div class="fact-strip">
           ${[
@@ -444,6 +444,7 @@ async function viewDevice(id) {
         <div id="tab-body"></div>
       </div>`;
     $$('.tabs button').forEach((b) => b.addEventListener('click', () => { tab = b.dataset.tab; render(); }));
+    if (canDev('devices.manage')) bindPowerHero(d, async () => { await reload(); render(); });
     $('#poll-now')?.addEventListener('click', () => attempt(async () => {
       await api(`/devices/${id}/poll`, { method: 'POST' });
       setTimeout(reload, 8000);
@@ -1181,6 +1182,7 @@ async function viewDevice(id) {
         ${data.ssh_host_key || data.tls_pin ? `<button type="button" class="ghost sm" id="reset-key">${icon('refresh', 'i-sm')}Gemerkte Schlüssel vergessen</button>
           <p class="hint">Nur nach einer Neuinstallation des Geräts nötig – oder wenn die Diagnose „Zertifikat geändert“ meldet und du sicher bist, dass das Gerät neu aufgesetzt wurde.</p>` : ''}
       </section>
+      ${powerSettingsSection()}
       <section class="span-1"><h3>Gerät entfernen</h3>
         <p class="muted small">Löscht das Gerät mit allen Messwerten und Ereignissen. Wird es beim nächsten Scan wieder gefunden, taucht es neu auf.</p>
         <button type="button" class="danger" id="dev-delete">${icon('trash')}Gerät löschen</button></section>
@@ -1189,6 +1191,7 @@ async function viewDevice(id) {
 
   function bindSettings() {
     makeSearchable($('#dev-form select[name="parent_id"]'), 'Übergeordnetes Gerät suchen …');
+    bindPowerSettings(data.device, credentials).catch((e) => { const b = $('#power-settings'); if (b) b.innerHTML = `<p class="muted">${esc(e.message)}</p>`; });
     $('#dev-form').addEventListener('submit', (ev) => {
       ev.preventDefault();
       const f = new FormData(ev.target);
