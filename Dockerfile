@@ -52,6 +52,7 @@ RUN set -eux; \
 
 COPY --from=build /netpulse /usr/local/bin/netpulse
 COPY web/ /app/web/
+COPY LICENSE TRADEMARK.md /app/
 
 RUN setcap cap_net_raw+ep /usr/local/bin/netpulse \
  && apt-get purge -y libcap2-bin && apt-get autoremove -y

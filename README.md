@@ -305,7 +305,7 @@ backend/            Rust-Quellcode
   data/oui.tsv      Herstellerliste (IEEE)
   src/auth.rs       Passwörter, Sitzungen, Rollen, Brute-Force-Schutz
 web/                Weboberfläche (index.html, app.js, style.css)
-docs/               Architektur, Datenschutz, Einrichtung der Abfragen, Roadmap
+docs/               Architektur, Datenschutz, Einrichtung der Abfragen, Lizenzen Dritter
 deploy/             Stack-Datei für Portainer (fertige Images)
 proxy/              Caddy-Image mit eingebauter Konfiguration
 .github/workflows/  Automatische Tests und Image-Builds
@@ -313,12 +313,27 @@ Dockerfile          Multi-Arch-Build (amd64 + arm64)
 docker-compose.yml  Produktivbetrieb (Host-Netzwerk)
 docker-compose.dev.yml  Test unter Windows/macOS
 Caddyfile           HTTPS und Sicherheits-Header
+LICENSE             Lizenz (AGPL-3.0-or-later)
+TRADEMARK.md        Marke und Logo „BuscheHome“
 ```
+
+## Lizenz
+
+NetPulse ist freie Software unter der **GNU Affero General Public License v3.0 oder neuer**
+(AGPL-3.0-or-later), siehe [LICENSE](LICENSE). Copyright © 2026 Thomas Busche (BuscheHome).
+
+Kurz gesagt: Jeder darf NetPulse kostenlos nutzen, verändern und weitergeben. Wer eine **veränderte**
+Fassung weitergibt oder sie anderen über das Netz zur Nutzung anbietet, muss deren Quellcode ebenfalls unter
+der AGPL offenlegen und die Hinweise auf den Urheber behalten. Für den eigenen Betrieb zu Hause oder in der
+Firma ändert sich dadurch nichts.
+
+Verwendete Bibliotheken und Daten anderer Projekte stehen unter ihren eigenen (durchweg passenden) Lizenzen,
+siehe [docs/LIZENZEN-DRITTER.md](docs/LIZENZEN-DRITTER.md).
 
 ## Marke und Logo
 
 Name und Logo **„BuscheHome“** (`web/buschehome.png`, `docs/buschehome-logo.png`) sind das Markenzeichen
-von Thomas Busche. Sie stehen **nicht** unter der Lizenz des Quellcodes: Der Code darf im Rahmen seiner
-Lizenz verwendet und verändert werden, das Logo aber nur unverändert, um auf die Herkunft von NetPulse
-hinzuweisen. Wer eine eigene, veränderte Fassung verbreitet, entfernt bitte das Logo bzw. ersetzt es durch
-ein eigenes. Einzelheiten stehen in [TRADEMARK.md](TRADEMARK.md).
+von Thomas Busche. Sie stehen **nicht** unter der AGPL: Der Code darf im Rahmen der Lizenz verwendet und
+verändert werden, das Logo aber nur unverändert, um auf die Herkunft von NetPulse hinzuweisen. Wer eine
+eigene, veränderte Fassung verbreitet, entfernt bitte das Logo bzw. ersetzt es durch ein eigenes.
+Einzelheiten stehen in [TRADEMARK.md](TRADEMARK.md).
