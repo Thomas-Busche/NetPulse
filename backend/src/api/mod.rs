@@ -90,6 +90,7 @@ pub fn router(state: AppState) -> Router {
         .route("/sites/{id}", axum::routing::patch(sites::update).delete(sites::remove))
         .route("/sites/{id}/devices", post(sites::move_devices))
         .route("/problems", get(sites::problems))
+        .route("/leitstand/layout", get(dashboard::leitstand_load).put(dashboard::leitstand_save))
         // Dashboard (pro Benutzer)
         .route("/dashboard", get(dashboard::load).put(dashboard::save))
         .route("/pulse", get(dashboard::pulse))

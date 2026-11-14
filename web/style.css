@@ -994,6 +994,18 @@ tr.sev-warning td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
 .ls-tile.st-maintenance .ls-light { background: var(--info); box-shadow: 0 0 0 5px var(--info-soft); }
 .ls-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; background: var(--up); }
 .ls-dot.st-red { background: var(--down); } .ls-dot.st-yellow { background: var(--warn); } .ls-dot.st-maintenance { background: var(--info); }
+.ls-tiles:empty { display: none; }
+/* Elemente in frei wählbarer Reihenfolge: Abstand über das Gerüst statt über die Elemente */
+#ls-body { display: flex; flex-direction: column; gap: 16px; }
+#ls-body .ls-kpis, #ls-body .ls-tiles { margin-bottom: 0; }
+#ls-body > #ls-kpis:empty { display: none; }
+/* Dialog „Leitstand anpassen“ */
+.ls-cfg-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.ls-cfg-list li { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 6px 8px;
+  border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface); }
+.ls-cfg-list li:first-child [data-up], .ls-cfg-list li:last-child [data-down] { visibility: hidden; }
+.ls-cfg-move { display: flex; gap: 2px; flex-shrink: 0; }
+.ls-cfg-list input[type="checkbox"] { flex-shrink: 0; }
 
 /* Leitstand-Bildschirm (Kiosk) und Vollbild: ohne Menü, größere Schrift */
 body.kiosk .sidebar, body.kiosk .menu-btn, body.kiosk .search, body.kiosk #logout { display: none !important; }

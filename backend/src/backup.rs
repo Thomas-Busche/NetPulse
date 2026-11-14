@@ -201,6 +201,7 @@ pub async fn export(state: &AppState) -> Result<Value> {
         "group_members": rows(db, "SELECT group_id, user_id FROM group_members").await?,
         "role_assignments": rows(db, "SELECT role_id, user_id, group_id, site_id FROM role_assignments").await?,
         "dashboards": rows(db, "SELECT user_id, layout FROM dashboards").await?,
+        "leitstand_layouts": rows(db, "SELECT user_id, layout FROM leitstand_layouts").await?,
         "dashboard_views": rows(db, "SELECT name, owner_id, layout, site_id, shared, group_ids, is_default FROM dashboard_views").await?,
         "settings": settings,
         "energy_daily": rows(db, "SELECT day, device_id, pos_wh, neg_wh, minutes FROM energy_daily").await?,
@@ -730,6 +731,19 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
         )
         .bind(user)
         .bind(&layout)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    // Leitstand-Einstellungen (enthalten keine Geräte-Verweise)
+    for d in list(p, "leitstand_layouts") {
+        let Some(user) = map_id(&user_ids, &d["user_id"]) else { continue };
+        sqlx::query(
+            "INSERT INTO leitstand_layouts (user_id, layout) VALUES ($1, $2)
+             ON CONFLICT (user_id) DO UPDATE SET layout = EXCLUDED.layout, updated_at = now()",
+        )
+        .bind(user)
+        .bind(&d["layout"])
         .execute(&mut *tx)
         .await?;
     }
