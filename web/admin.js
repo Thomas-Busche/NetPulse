@@ -527,18 +527,29 @@ async function renderSchedule() {
 // ---------------------------------------------------------------------------
 
 const CRED_KINDS = {
-  snmp_v2c: { label: 'SNMP v2c', icon: 'network', port: 161 },
-  snmp_v3: { label: 'SNMP v3 (empfohlen)', icon: 'shield-lock', port: 161 },
-  ssh_key: { label: 'SSH mit Schlüssel (empfohlen)', icon: 'key', port: 22 },
-  ssh_password: { label: 'SSH mit Passwort', icon: 'lock', port: 22 },
-  http: { label: 'HTTP / Web-Anmeldung (z. B. Shelly)', icon: 'bolt', port: 80 },
-  unifi: { label: 'UniFi-Controller (API-Schlüssel)', icon: 'access-point', port: '11443 / 443 / 8443' },
-  fritzbox: { label: 'AVM FRITZ!Box (TR-064)', icon: 'router', port: 49000 },
-  opnsense: { label: 'OPNsense (API-Schlüssel)', icon: 'wall', port: 443 },
-  mikrotik: { label: 'MikroTik RouterOS (REST-API)', icon: 'router', port: '443 / 80' },
+  snmp_v3: { label: 'SNMP v3 (empfohlen)', icon: 'shield-lock', port: 161, group: 'generic' },
+  snmp_v2c: { label: 'SNMP v2c', icon: 'network', port: 161, group: 'generic' },
+  ssh_key: { label: 'SSH mit Schlüssel (empfohlen)', icon: 'key', port: 22, group: 'generic' },
+  ssh_password: { label: 'SSH mit Passwort', icon: 'lock', port: 22, group: 'generic' },
+  http_basic: { label: 'HTTP/REST-API mit Benutzer + Passwort', icon: 'world-www', port: '443 / 80', group: 'generic' },
+  http_token: { label: 'HTTP/REST-API mit Token / API-Schlüssel', icon: 'world-www', port: '443 / 80', group: 'generic' },
+  http: { label: 'Shelly (HTTP)', icon: 'bolt', port: 80, group: 'vendor' },
+  unifi: { label: 'UniFi-Controller (API-Schlüssel)', icon: 'access-point', port: '11443 / 443 / 8443', group: 'vendor' },
+  fritzbox: { label: 'AVM FRITZ!Box (TR-064)', icon: 'router', port: 49000, group: 'vendor' },
+  opnsense: { label: 'OPNsense (API-Schlüssel)', icon: 'wall', port: 443, group: 'vendor' },
+  mikrotik: { label: 'MikroTik RouterOS (REST-API)', icon: 'router', port: '443 / 80', group: 'vendor' },
 };
+const CRED_GROUPS = [
+  ['generic', 'Allgemein – für jedes Gerät, jeden Dienst, jeden Hersteller'],
+  ['vendor', 'Fertige Hersteller-Anbindungen'],
+];
 /** Nur fest einem Gerät zugeordnet, nie automatisch ausprobiert */
-const DEVICE_ONLY_KINDS = ['unifi', 'fritzbox', 'opnsense', 'mikrotik'];
+const DEVICE_ONLY_KINDS = ['unifi', 'fritzbox', 'opnsense', 'mikrotik', 'http_basic', 'http_token'];
+/** Arten, mit denen eigene Abfragen/Aktionen möglich sind, und wie das Ziel heißt */
+const QUERY_PROTO = {
+  ssh_key: 'ssh', ssh_password: 'ssh', snmp_v2c: 'snmp', snmp_v3: 'snmp', http: 'http', http_basic: 'http', http_token: 'http',
+};
+const credKindLabel = (c) => (CRED_KINDS[c.kind] || {}).label || c.kind;
 
 /**
  * Zugangsdaten anlegen/bearbeiten. `opts.kind`/`opts.name` füllen ein neues Formular vor,
@@ -547,13 +558,35 @@ const DEVICE_ONLY_KINDS = ['unifi', 'fritzbox', 'opnsense', 'mikrotik'];
 function credDialog(cred, opts = {}) {
   const editing = !!cred;
   const keep = editing ? 'leer lassen = unverändert' : '';
+  const o = (cred && cred.options) || {};
+  const current = cred ? cred.kind : opts.kind || 'snmp_v3';
   const dlg = openModal(editing ? 'Zugangsdaten bearbeiten' : 'Zugangsdaten hinzufügen', `<form class="form" id="cred-form">
-    <label>Art<select name="kind"${editing ? ' disabled' : ''}>${Object.entries(CRED_KINDS).map(([k, v]) => `<option value="${k}"${(cred ? cred.kind : opts.kind) === k ? ' selected' : ''}>${esc(v.label)}</option>`).join('')}</select></label>
-    <label>Name<input name="name" required maxlength="100" value="${esc(cred ? cred.name : opts.name || '')}" placeholder="z. B. Router SNMP"></label>
+    <label>Art<select name="kind"${editing ? ' disabled' : ''}>${CRED_GROUPS.map(([g, label]) => `<optgroup label="${esc(label)}">
+      ${Object.entries(CRED_KINDS).filter(([, v]) => v.group === g).map(([k, v]) => `<option value="${k}"${current === k ? ' selected' : ''}>${esc(v.label)}</option>`).join('')}</optgroup>`).join('')}</select></label>
+    <p class="hint" id="kind-hint"></p>
     <div class="form-row">
-      <label data-for="snmp_v3 ssh_key ssh_password http unifi fritzbox opnsense mikrotik"><span id="user-label">Benutzername</span><input name="username" value="${esc(cred ? cred.username || '' : '')}" autocomplete="off"></label>
+      <label>Name<input name="name" required maxlength="100" value="${esc(cred ? cred.name : opts.name || '')}" placeholder="z. B. NAS Keller SSH"></label>
+      <label>Hersteller / Dienst (frei, optional)<input name="vendor" maxlength="100" list="vendor-list" value="${esc(o.vendor || '')}" placeholder="z. B. Synology, Proxmox, Home Assistant"></label>
+    </div>
+    <datalist id="vendor-list">${['Synology', 'QNAP', 'TrueNAS', 'Ugreen', 'Unraid', 'Proxmox', 'Home Assistant', 'ioBroker', 'pfSense', 'OPNsense', 'Ubiquiti',
+    'TP-Link Omada', 'Zyxel', 'Netgear', 'Cisco', 'HP / HPE', 'Brother', 'Canon', 'Epson', 'APC', 'Eaton', 'Raspberry Pi', 'Windows', 'Linux', 'Docker', 'Portainer']
+    .map((v) => `<option value="${esc(v)}">`).join('')}</datalist>
+    <div class="form-row">
+      <label data-for="snmp_v3 ssh_key ssh_password http http_basic unifi fritzbox opnsense mikrotik"><span id="user-label">Benutzername</span><input name="username" value="${esc(cred ? cred.username || '' : '')}" autocomplete="off"></label>
       <label>Port<input name="port" type="number" min="1" max="65535" value="${esc(cred ? cred.port || '' : '')}" placeholder="Standard"></label>
     </div>
+    <div class="form-row" data-for="http_basic http_token">
+      <label>Protokoll<select name="scheme"><option value="https"${o.scheme !== 'http' ? ' selected' : ''}>HTTPS (empfohlen)</option>
+        <option value="http"${o.scheme === 'http' ? ' selected' : ''}>HTTP (unverschlüsselt, nur im LAN)</option></select></label>
+      <label>Test-Pfad<input name="test_path" value="${esc(o.test_path || '')}" placeholder="/ (z. B. /api/status)"></label>
+    </div>
+    <label data-for="http_basic">Anmeldeverfahren<select name="auth"><option value="">automatisch (Basic, bei Bedarf Digest)</option>
+      <option value="digest"${o.auth === 'digest' ? ' selected' : ''}>nur Digest (Passwort nie im Klartext)</option></select></label>
+    <div class="form-row" data-for="http_token">
+      <label>Header<input name="header" value="${esc(o.header || '')}" placeholder="Authorization"></label>
+      <label>Vorsatz vor dem Token<input name="prefix" value="${esc(o.prefix != null ? o.prefix : '')}" placeholder="Bearer (leer = Standard)"></label>
+    </div>
+    <label data-for="http_token">Token / API-Schlüssel<input name="token" type="password" autocomplete="new-password" placeholder="${keep}"></label>
     <label data-for="snmp_v2c">Community<input name="community" type="password" autocomplete="new-password" placeholder="${keep || 'z. B. public'}"></label>
     <div class="form-row" data-for="snmp_v3">
       <label>Authentifizierung<select name="auth_protocol"><option value="sha1">SHA-1</option><option value="sha256" selected>SHA-256</option>
@@ -565,20 +598,34 @@ function credDialog(cred, opts = {}) {
         <option value="des">DES (veraltet)</option><option value="none">keine</option></select></label>
       <label>Verschlüsselungs-Passwort<input name="priv_password" type="password" autocomplete="new-password" placeholder="${keep}"></label>
     </div>
-    <label data-for="ssh_password http unifi fritzbox opnsense mikrotik"><span id="pw-label">Passwort</span><input name="password" type="password" autocomplete="new-password" placeholder="${keep}"></label>
+    <label data-for="ssh_password http http_basic unifi fritzbox opnsense mikrotik"><span id="pw-label">Passwort</span><input name="password" type="password" autocomplete="new-password" placeholder="${keep}"></label>
     <label data-for="ssh_key">Privater Schlüssel (OpenSSH-Format)<textarea name="private_key" class="mono" placeholder="${keep || '-----BEGIN OPENSSH PRIVATE KEY-----'}"></textarea></label>
     <label data-for="ssh_key">Passphrase (optional)<input name="passphrase" type="password" autocomplete="new-password" placeholder="${keep}"></label>
     <label class="inline" data-for="snmp_v2c snmp_v3 ssh_key http"><input type="checkbox" name="auto"${cred && cred.auto ? ' checked' : ''}> Automatisch bei allen passenden Geräten verwenden</label>
     <p class="hint" id="auto-hint"></p>
     <div class="actions"><button type="submit">${icon('check')}Speichern</button></div></form>`);
   const form = $('#cred-form', dlg);
+  const KIND_HINTS = {
+    snmp_v3: 'Für Router, Switches, Drucker, USV, NAS und alles, was SNMP kann. Liest Standard-Werte automatisch; weitere Werte per OID unter „Eigene Abfragen“.',
+    snmp_v2c: 'Wie SNMP v3, aber ohne Verschlüsselung. Nur, wenn das Gerät kein v3 kann.',
+    ssh_key: 'Für Linux, NAS, Proxmox, Raspberry Pi, Windows (OpenSSH) und jedes andere Gerät mit SSH. Standard-Werte (CPU, RAM, Platten) kommen automatisch; '
+      + 'eigene Befehle – auch Aktionen wie Herunterfahren – unter „Eigene Abfragen“.',
+    ssh_password: 'Wie SSH mit Schlüssel, nur mit Passwort. Wird nur Geräten gesendet, die du gezielt zuordnest.',
+    http_basic: 'Für jede Weboberfläche oder REST-API mit Benutzer und Passwort (z. B. NAS-API, Drucker-Webseite, Smart-Home-Zentrale). '
+      + 'Welche Daten gelesen werden, legst du unter „Eigene Abfragen“ fest (Pfad + JSON-Feld).',
+    http_token: 'Für REST-APIs mit Token oder API-Schlüssel, z. B. Home Assistant (Authorization: Bearer …), Proxmox (Authorization: PVEAPIToken=…), '
+      + 'Portainer (Header „X-API-Key“, Vorsatz leer). Welche Daten gelesen werden, legst du unter „Eigene Abfragen“ fest.',
+  };
   const update = () => {
     const kind = form.kind.value;
     $$('[data-for]', form).forEach((el) => { el.hidden = !el.dataset.for.split(' ').includes(kind); });
+    $('#kind-hint', dlg).textContent = KIND_HINTS[kind] || '';
     $('#auto-hint', dlg).textContent = kind === 'snmp_v2c'
       ? 'Hinweis: Bei SNMP v2c wird die Community unverschlüsselt an jedes getestete Gerät gesendet. Für „automatisch“ besser SNMP v3.'
       : kind === 'ssh_password' ? 'SSH-Passwörter werden aus Sicherheitsgründen nie automatisch ausprobiert – bitte Geräte gezielt zuordnen.'
-        : kind === 'http' ? 'Gilt für alle erkannten Shelly-Geräte (Benutzer bei Gen2+ immer „admin“). Das Passwort geht nur an Geräte, die sich '
+        : kind === 'http_basic' || kind === 'http_token' ? 'Wird nur den Geräten gesendet, denen du die Zugangsdaten zuordnest – nie automatisch. '
+          + 'Bei HTTPS merkt sich NetPulse das Zertifikat des Geräts beim ersten Kontakt; ändert es sich, werden keine Zugangsdaten mehr gesendet.'
+          : kind === 'http' ? 'Gilt für alle erkannten Shelly-Geräte (Benutzer bei Gen2+ immer „admin“). Das Passwort geht nur an Geräte, die sich '
           + 'vorher als Shelly ausgewiesen haben; bei Gen2+ wird es per Digest-Verfahren nie im Klartext übertragen.'
           : kind === 'unifi' ? 'Empfohlen: API-Schlüssel – funktioniert auch mit Zwei-Faktor-Anmeldung. Anlegen in UniFi Network unter '
             + 'Einstellungen → Control Plane → Integrations → „Create API Key“. Benutzername dann leer lassen. Alternativ ein lokales Konto '
@@ -602,10 +649,18 @@ function credDialog(cred, opts = {}) {
     const kind = form.kind.value;
     const v = (n) => form.elements[n].value.trim();
     const secret = {};
-    ['community', 'password', 'private_key', 'passphrase', 'auth_password', 'priv_password'].forEach((n) => { if (form.elements[n].value) secret[n] = form.elements[n].value; });
+    ['community', 'password', 'private_key', 'passphrase', 'auth_password', 'priv_password', 'token'].forEach((n) => { if (form.elements[n].value) secret[n] = form.elements[n].value; });
     if (kind === 'snmp_v3') { secret.auth_protocol = v('auth_protocol'); secret.priv_protocol = v('priv_protocol'); }
+    const options = { vendor: v('vendor') };
+    if (kind === 'http_basic' || kind === 'http_token') { options.scheme = v('scheme'); options.test_path = v('test_path'); }
+    if (kind === 'http_basic') options.auth = v('auth');
+    if (kind === 'http_token') {
+      options.header = v('header');
+      // Vorsatz nur mitsenden, wenn ausgefüllt oder bei eigenem Header bewusst leer (z. B. X-API-Key)
+      if (form.elements.prefix.value !== '' || (v('header') && v('header').toLowerCase() !== 'authorization')) options.prefix = form.elements.prefix.value;
+    }
     const body = { name: v('name'), kind, username: v('username'), port: v('port') ? Number(v('port')) : null,
-      auto: !DEVICE_ONLY_KINDS.includes(kind) && form.auto.checked, secret };
+      auto: !DEVICE_ONLY_KINDS.includes(kind) && form.auto.checked, secret, options };
     attempt(async () => {
       if (editing) {
         await api(`/credentials/${cred.id}`, { method: 'PATCH', body });
@@ -620,9 +675,144 @@ function credDialog(cred, opts = {}) {
   });
 }
 
+/** Vorlagen für eigene Abfragen – ein Klick füllt das Formular */
+const QUERY_TEMPLATES = [
+  { proto: 'ssh', name: 'Laufzeit (Tage)', target: "awk '{print $1/86400}' /proc/uptime", value_type: 'number', unit: 'Tage', hint: 'Linux, NAS, Raspberry Pi' },
+  { proto: 'ssh', name: 'Angemeldete Benutzer', target: 'who | wc -l', value_type: 'number', hint: 'Linux' },
+  { proto: 'ssh', name: 'Ausstehende Updates (apt)', target: 'apt list --upgradable 2>/dev/null | grep -c upgradable || true', value_type: 'number', hint: 'Debian, Ubuntu, Raspberry Pi OS' },
+  { proto: 'ssh', name: 'Laufende Docker-Container', target: 'docker ps -q | wc -l', value_type: 'number', hint: 'Docker-Host (Benutzer in Gruppe docker)' },
+  { proto: 'ssh', name: 'ZFS-Pool-Zustand', target: 'zpool list -H -o health | sort -u | paste -sd,', value_type: 'text', hint: 'TrueNAS, Proxmox, ZFS' },
+  { proto: 'ssh', name: 'RAID-Zustand (mdadm)', target: "cat /proc/mdstat | grep -c '\\[U*_' || true", value_type: 'number', unit: 'defekt', hint: 'Synology, Ugreen, QNAP, Linux-Software-RAID: 0 = alles gut' },
+  { proto: 'ssh', name: 'CPU-Temperatur', target: 'cat /sys/class/thermal/thermal_zone0/temp', value_type: 'number', unit: 'm°C', hint: 'Linux (Wert in Milligrad)' },
+  { proto: 'ssh', mode: 'action', name: 'Herunterfahren (Linux)', target: 'sudo -n /sbin/shutdown -h now', hint: 'Benutzer braucht sudo-Recht nur für shutdown (sudoers: … NOPASSWD: /sbin/shutdown)' },
+  { proto: 'ssh', mode: 'action', name: 'Neu starten (Linux)', target: 'sudo -n /sbin/shutdown -r now', hint: 'wie oben' },
+  { proto: 'ssh', mode: 'action', name: 'Herunterfahren (Windows)', target: 'shutdown /s /t 0', hint: 'Windows mit OpenSSH-Server' },
+  { proto: 'ssh', mode: 'action', name: 'Herunterfahren (Synology)', target: 'sudo -n /sbin/poweroff', hint: 'DSM: Benutzer in Gruppe administrators' },
+  { proto: 'http', name: 'Home Assistant: Sensorwert', target: '/api/states/sensor.wohnzimmer_temperatur', extract: 'state', value_type: 'number', unit: '°C', hint: 'Token-Zugang, Header Authorization, Vorsatz „Bearer “' },
+  { proto: 'http', name: 'Proxmox: Version', target: '/api2/json/version', extract: 'data.version', value_type: 'text', hint: 'Token-Zugang, Port 8006, Vorsatz „PVEAPIToken=“' },
+  { proto: 'http', name: 'JSON-Feld lesen', target: '/api/status', extract: 'status', value_type: 'text', hint: 'beliebige REST-API' },
+  { proto: 'snmp', name: 'Laufzeit (sysUpTime, 1/100 s)', target: '1.3.6.1.2.1.1.3.0', value_type: 'number', hint: 'jedes SNMP-Gerät' },
+  { proto: 'snmp', name: 'Seitenzähler Drucker', target: '1.3.6.1.2.1.43.10.2.1.4.1.1', value_type: 'number', unit: 'Seiten', hint: 'Printer-MIB' },
+  { proto: 'snmp', name: 'Eigene OID (Hersteller-MIB)', target: '1.3.6.1.4.1.', value_type: 'text', hint: 'OID im SNMP-Explorer des Geräts suchen' },
+];
+
+/** Eigene Abfrage/Aktion anlegen oder bearbeiten */
+async function queryDialog(query, creds, onSaved) {
+  const usable = creds.filter((c) => QUERY_PROTO[c.kind]);
+  if (!usable.length) { toast('Zuerst SSH-, HTTP- oder SNMP-Zugangsdaten anlegen', true); return; }
+  const devices = await api('/devices');
+  const q = { mode: 'read', method: 'GET', value_type: 'text', enabled: true, credential_id: usable[0].id, ...(query || {}) };
+  const selected = new Set(q.device_ids || []);
+  const dlg = openModal(query ? 'Eigene Abfrage bearbeiten' : 'Eigene Abfrage hinzufügen', `<form class="form" id="q-form">
+    <div class="form-row">
+      <label>Zugangsdaten<select name="credential_id">${usable.map((c) => `<option value="${c.id}"${c.id === q.credential_id ? ' selected' : ''}>${esc(c.name)} · ${esc(credKindLabel(c))}</option>`).join('')}</select></label>
+      <label>Art<select name="mode"><option value="read"${q.mode === 'read' ? ' selected' : ''}>Abfrage – regelmäßig lesen</option>
+        <option value="action"${q.mode === 'action' ? ' selected' : ''}>Aktion – nur auf Knopfdruck (z. B. Herunterfahren)</option></select></label>
+    </div>
+    <label>Vorlage<select id="q-tpl"><option value="">– eigene Eingabe –</option></select></label>
+    <label>Name<input name="name" required maxlength="100" value="${esc(q.name || '')}" placeholder="z. B. Festplattentemperatur"></label>
+    <div class="form-row">
+      <label data-proto="http" class="narrow">Methode<select name="method">${['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((m) => `<option${m === q.method ? ' selected' : ''}>${m}</option>`).join('')}</select></label>
+      <label><span id="q-target-label">Befehl</span><input name="target" required class="mono" value="${esc(q.target || '')}"></label>
+    </div>
+    <label data-proto="http">Inhalt (Body, optional – JSON oder Text)<textarea name="body" class="mono" rows="3">${esc(q.body || '')}</textarea></label>
+    <div class="form-row">
+      <label>Wert übernehmen aus<input name="extract" class="mono" value="${esc(q.extract || '')}" placeholder="leer = ganze Antwort"></label>
+      <label class="narrow">Typ<select name="value_type"><option value="text"${q.value_type === 'text' ? ' selected' : ''}>Text</option>
+        <option value="number"${q.value_type === 'number' ? ' selected' : ''}>Zahl (mit Verlauf)</option></select></label>
+      <label class="narrow">Einheit<input name="unit" maxlength="20" value="${esc(q.unit || '')}" placeholder="°C, %, GB"></label>
+    </div>
+    <p class="hint">„Wert übernehmen aus“: bei JSON-Antworten ein Pfad wie <code>data.temp</code> oder <code>items.0.name</code>,
+      sonst ein Text, hinter dem der Wert steht (z. B. <code>Temperature:</code>). Bei „Zahl“ wird die erste Zahl genommen.</p>
+    <label class="inline"><input type="checkbox" id="q-all"${q.device_ids ? '' : ' checked'}> Für alle Geräte, denen diese Zugangsdaten zugeordnet sind</label>
+    <div id="q-devs" class="table-wrap" hidden></div>
+    <label class="inline"><input type="checkbox" name="enabled"${q.enabled ? ' checked' : ''}> aktiv</label>
+    <p class="hint" id="q-mode-hint"></p>
+    <div class="form-row">
+      <label>Testen an Gerät<select id="q-dev"></select></label>
+      <div class="actions"><button type="button" class="ghost" id="q-test">${icon('player-play')}Testen</button></div>
+    </div>
+    <div id="q-result"></div>
+    <div class="actions"><button type="submit">${icon('check')}Speichern</button></div></form>`);
+  dlg.classList.add('wide');
+  const form = $('#q-form', dlg);
+  const credOf = () => usable.find((c) => c.id === Number(form.credential_id.value));
+  const proto = () => QUERY_PROTO[credOf().kind];
+  const fillDevices = async () => {
+    const cred = credOf();
+    const linked = new Set(await api(`/credentials/${cred.id}/devices`).catch(() => []));
+    const sorted = [...devices].sort((a, b) => linked.has(b.id) - linked.has(a.id));
+    $('#q-dev', dlg).innerHTML = sorted.map((d) => `<option value="${d.id}">${esc(deviceLabel(d))} – ${esc(d.ip)}${linked.has(d.id) ? '' : ' (nicht zugeordnet)'}</option>`).join('');
+    $('#q-devs', dlg).innerHTML = `<table><tbody>${sorted.map((d) => `<tr><td><input type="checkbox" data-id="${d.id}"${selected.has(d.id) ? ' checked' : ''} aria-label="auswählen"></td>
+      <td>${esc(deviceLabel(d))}${linked.has(d.id) ? ' <span class="badge accent">zugeordnet</span>' : ''}</td><td class="mono small">${esc(d.ip)}</td></tr>`).join('')}</tbody></table>`;
+    $$('#q-devs input[data-id]', dlg).forEach((c) => c.addEventListener('change', () => {
+      if (c.checked) selected.add(Number(c.dataset.id)); else selected.delete(Number(c.dataset.id));
+    }));
+  };
+  const update = () => {
+    const p = proto();
+    $$('[data-proto]', form).forEach((el) => { el.hidden = el.dataset.proto !== p; });
+    $('#q-target-label', dlg).textContent = p === 'ssh' ? 'Befehl (läuft auf dem Gerät)' : p === 'http' ? 'Pfad oder URL (z. B. /api/status)' : 'OID (z. B. 1.3.6.1.2.1.1.3.0)';
+    form.target.placeholder = p === 'ssh' ? 'z. B. cat /sys/class/thermal/thermal_zone0/temp' : p === 'http' ? '/api/status' : '1.3.6.1.2.1.1.3.0';
+    $('#q-mode-hint', dlg).textContent = form.mode.value === 'action'
+      ? 'Aktionen laufen nie automatisch. Ausführen in der Geräteansicht (Tab „Eigene Abfragen“) – oder durch Zeitpläne, z. B. zum Herunterfahren.'
+      : 'Läuft bei jeder tiefen Abfrage (Standard alle paar Minuten). Ergebnis erscheint in der Geräteansicht im Tab „Eigene Abfragen“.';
+    $('#q-test', dlg).disabled = form.mode.value === 'action';
+    $('#q-test', dlg).title = form.mode.value === 'action' ? 'Aktionen werden beim Testen nicht ausgeführt' : '';
+    const tpl = QUERY_TEMPLATES.filter((t) => t.proto === p);
+    $('#q-tpl', dlg).innerHTML = `<option value="">– eigene Eingabe –</option>${tpl.map((t) => `<option value="${QUERY_TEMPLATES.indexOf(t)}">${esc(t.name)} · ${esc(t.hint)}</option>`).join('')}`;
+  };
+  form.credential_id.addEventListener('change', () => { update(); fillDevices(); });
+  form.mode.addEventListener('change', update);
+  $('#q-all', dlg).addEventListener('change', (ev) => { $('#q-devs', dlg).hidden = ev.target.checked; });
+  $('#q-devs', dlg).hidden = $('#q-all', dlg).checked;
+  $('#q-tpl', dlg).addEventListener('change', (ev) => {
+    const t = QUERY_TEMPLATES[Number(ev.target.value)];
+    if (!t || ev.target.value === '') return;
+    form.elements.name.value = t.name;
+    form.target.value = t.target;
+    form.extract.value = t.extract || '';
+    form.value_type.value = t.value_type || 'text';
+    form.unit.value = t.unit || '';
+    form.mode.value = t.mode || 'read';
+    form.method.value = 'GET';
+    update();
+  });
+  const collect = () => ({
+    name: form.elements.name.value.trim(), credential_id: Number(form.credential_id.value), mode: form.mode.value,
+    target: form.target.value.trim(), method: proto() === 'http' ? form.method.value : 'GET',
+    body: proto() === 'http' ? form.body.value : null, extract: form.extract.value.trim() || null,
+    value_type: form.value_type.value, unit: form.unit.value.trim() || null,
+    device_ids: $('#q-all', dlg).checked ? null : [...selected], enabled: form.enabled.checked,
+  });
+  $('#q-test', dlg).addEventListener('click', async () => {
+    const box = $('#q-result', dlg);
+    box.innerHTML = '<p class="muted">Frage ab …</p>';
+    try {
+      const r = await api('/queries/test', { method: 'POST', body: { ...collect(), device_id: Number($('#q-dev', dlg).value) } });
+      box.innerHTML = `<div class="notice ${r.ok ? 'info' : ''}">${icon(r.ok ? 'circle-check' : 'alert-triangle')}<span>${esc(r.message)}</span></div>
+        ${r.output ? `<details${r.ok ? '' : ' open'}><summary class="small">Rohe Antwort</summary><pre class="mono small pre-wrap">${esc(r.output)}</pre></details>` : ''}`;
+    } catch (e) {
+      box.innerHTML = `<div class="notice">${icon('alert-triangle')}<span>${esc(e.message)}</span></div>`;
+    }
+  });
+  form.addEventListener('submit', (ev) => {
+    ev.preventDefault();
+    const body = collect();
+    if (body.device_ids && !body.device_ids.length) { toast('Bitte Geräte auswählen oder „für alle zugeordneten Geräte“ anhaken', true); return; }
+    attempt(async () => {
+      await api(query ? `/queries/${query.id}` : '/queries', { method: query ? 'PATCH' : 'POST', body });
+      dlg.close();
+      await onSaved();
+    }, 'Abfrage gespeichert');
+  });
+  update();
+  await fillDevices();
+}
+
 async function viewCredentials() {
   const render = async () => {
-    const creds = await api('/credentials');
+    const [creds, queries] = await Promise.all([api('/credentials'), api('/queries').catch(() => [])]);
     view().innerHTML = `
       <div class="notice info">${icon('shield-lock')}<span>Zugangsdaten werden mit AES-256 verschlüsselt gespeichert und nie wieder angezeigt.
         Verwende auf den Geräten <b>eigene Konten mit reinen Leserechten</b> – NetPulse führt nur lesende Abfragen aus.
@@ -630,7 +820,8 @@ async function viewCredentials() {
       <div class="card"><header><h2>${icon('key')}Zugangsdaten</h2><button type="button" id="cred-add">${icon('plus')}Hinzufügen</button></header>
       ${creds.length ? `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Art</th><th>Benutzer</th><th>Port</th><th>Automatisch</th><th>Geräte</th><th></th></tr></thead>
       <tbody>${creds.map((c) => `<tr><td>${esc(c.name)}</td>
-        <td><span class="cell-dev">${icon((CRED_KINDS[c.kind] || {}).icon || 'key', 'i-sm')}${esc((CRED_KINDS[c.kind] || {}).label || c.kind)}</span></td>
+        <td><span class="cell-dev">${icon((CRED_KINDS[c.kind] || {}).icon || 'key', 'i-sm')}${esc(credKindLabel(c))}</span>
+          ${c.options && c.options.vendor ? `<span class="badge plain">${esc(c.options.vendor)}</span>` : ''}</td>
         <td>${esc(c.username || '–')}</td><td>${esc(c.port || (CRED_KINDS[c.kind] || {}).port)}</td>
         <td>${c.auto ? '<span class="badge accent">ja</span>' : '<span class="muted">nein</span>'}</td>
         <td>${c.device_count}</td>
@@ -639,7 +830,25 @@ async function viewCredentials() {
           <button type="button" class="ghost sm" data-assign="${c.id}" title="Geräte auswählen, testen und zuordnen">${icon('devices', 'i-sm')}Geräte</button>
           <button type="button" class="ghost sm" data-edit="${c.id}" title="Bearbeiten">${icon('edit', 'i-sm')}</button>
           <button type="button" class="ghost sm" data-del="${c.id}" title="Löschen">${icon('trash', 'i-sm')}</button></td></tr>`).join('')}</tbody></table></div>`
-      : empty('Noch keine Zugangsdaten. Mit SNMP oder SSH liest NetPulse CPU, RAM, Festplatten, Schnittstellen, Toner und mehr aus.', 'key')}</div>`;
+      : empty('Noch keine Zugangsdaten. Mit SNMP oder SSH liest NetPulse CPU, RAM, Festplatten, Schnittstellen, Toner und mehr aus.', 'key')}</div>
+      <div class="card"><header><h2>${icon('list-details')}Eigene Abfragen und Aktionen</h2><button type="button" id="q-add">${icon('plus')}Hinzufügen</button></header>
+        <p class="muted small">Für alles, was NetPulse nicht von selbst kennt: eigene SSH-Befehle, HTTP-/REST-Aufrufe oder SNMP-OIDs – mit beliebigen
+          Zugangsdaten oben. Abfragen laufen regelmäßig und zeigen ihren Wert beim Gerät, Aktionen (z. B. Herunterfahren) nur auf Knopfdruck.</p>
+      ${queries.length ? `<div class="table-wrap"><table><thead><tr><th>Name</th><th>Art</th><th>Zugangsdaten</th><th>Befehl / Pfad / OID</th><th>Geräte</th><th></th></tr></thead>
+      <tbody>${queries.map((q) => `<tr${q.enabled ? '' : ' class="muted"'}><td>${esc(q.name)}${q.enabled ? '' : ' <span class="badge plain">aus</span>'}</td>
+        <td>${q.mode === 'action' ? '<span class="badge warn">Aktion</span>' : '<span class="badge accent">Abfrage</span>'}</td>
+        <td>${esc(q.credential_name)}</td>
+        <td class="mono small ellipsis" title="${esc(q.target)}">${q.method !== 'GET' && QUERY_PROTO[q.credential_kind] === 'http' ? `${esc(q.method)} ` : ''}${esc(q.target)}</td>
+        <td>${q.device_ids ? `${q.device_ids.length} ausgewählt` : 'alle zugeordneten'}${q.results_failed ? ` · <span class="error small">${q.results_failed} Fehler</span>` : ''}</td>
+        <td class="actions"><button type="button" class="ghost sm" data-qedit="${q.id}" title="Bearbeiten">${icon('edit', 'i-sm')}</button>
+          <button type="button" class="ghost sm" data-qdel="${q.id}" title="Löschen">${icon('trash', 'i-sm')}</button></td></tr>`).join('')}</tbody></table></div>`
+      : empty('Noch keine eigenen Abfragen. Beispiele: NAS-Temperatur per SSH, Wert aus einer REST-API, Hersteller-OID per SNMP oder „Herunterfahren“ als Aktion.', 'list-details')}</div>`;
+    $('#q-add').addEventListener('click', () => queryDialog(null, creds, render));
+    $$('[data-qedit]').forEach((b) => b.addEventListener('click', () => queryDialog(queries.find((q) => q.id === Number(b.dataset.qedit)), creds, render)));
+    $$('[data-qdel]').forEach((b) => b.addEventListener('click', () => {
+      if (!confirm('Abfrage löschen? Gespeicherte Werte und Verlauf gehen verloren.')) return;
+      attempt(async () => { await api(`/queries/${b.dataset.qdel}`, { method: 'DELETE' }); await render(); }, 'Gelöscht');
+    }));
     // Nach dem Anlegen direkt Geräte auswählen und testen
     const onSaved = async (created) => { await render(); if (created) assignDialog(created); };
     $('#cred-add').addEventListener('click', () => credDialog(null, { onSaved }));
@@ -647,7 +856,8 @@ async function viewCredentials() {
     $$('[data-test]').forEach((b) => b.addEventListener('click', () => testDialog(creds.find((c) => c.id === Number(b.dataset.test)))));
     $$('[data-assign]').forEach((b) => b.addEventListener('click', () => assignDialog(creds.find((c) => c.id === Number(b.dataset.assign)))));
     $$('[data-del]').forEach((b) => b.addEventListener('click', () => {
-      if (!confirm('Zugangsdaten löschen? Zugeordnete Geräte werden dann nicht mehr tief abgefragt.')) return;
+      const c = creds.find((x) => x.id === Number(b.dataset.del));
+      if (!confirm(`Zugangsdaten löschen? Zugeordnete Geräte werden dann nicht mehr tief abgefragt.${c && c.query_count ? ` Auch ${c.query_count} eigene Abfrage(n) werden gelöscht.` : ''}`)) return;
       attempt(async () => { await api(`/credentials/${b.dataset.del}`, { method: 'DELETE' }); await render(); }, 'Gelöscht');
     }));
   };
@@ -655,6 +865,10 @@ async function viewCredentials() {
   /** Passt ein Gerät grundsätzlich zur Zugangsart? (für die Vorauswahl) */
   const suits = (cred, d) => {
     if (cred.kind === 'http') return d.integration === 'shelly';
+    if (cred.kind === 'http_basic' || cred.kind === 'http_token') {
+      const ports = d.open_ports || [];
+      return cred.port ? ports.includes(cred.port) : ports.some((p) => [80, 443, 8080, 8443].includes(p));
+    }
     if (cred.kind === 'unifi') return (d.open_ports || []).some((p) => [11443, 8443].includes(p));
     if (cred.kind === 'fritzbox') return (d.open_ports || []).includes(49000) || /avm|fritz/i.test(`${d.vendor} ${d.hostname} ${d.model}`);
     if (cred.kind === 'opnsense') return /opnsense/i.test(`${d.os} ${d.hostname} ${d.model}`) || d.device_type === 'firewall';
@@ -968,7 +1182,7 @@ const AUDIT_LABEL = {
   device_update: 'Gerät geändert', device_delete: 'Gerät gelöscht', device_credentials: 'Zugangsdaten zugeordnet',
   ssh_key_reset: 'SSH-Schlüssel zurückgesetzt', network_add: 'Netz hinzugefügt', network_delete: 'Netz entfernt',
   scan_trigger: 'Scan gestartet', user_add: 'Benutzer angelegt', user_delete: 'Benutzer gelöscht',
-  credential_add: 'Zugangsdaten angelegt', credential_update: 'Zugangsdaten geändert', credential_delete: 'Zugangsdaten gelöscht',
+  credential_add: 'Zugangsdaten angelegt', credential_update: 'Zugangsdaten geändert', credential_delete: 'Zugangsdaten gelöscht', query_add: 'Eigene Abfrage angelegt', query_update: 'Eigene Abfrage geändert', query_delete: 'Eigene Abfrage gelöscht', query_action: 'Aktion ausgeführt',
   channel_add: 'Kanal angelegt', channel_update: 'Kanal geändert', channel_delete: 'Kanal gelöscht',
   discovery_schedule: 'Such-Zeitplan geändert', live_settings: 'Echtzeit-Abfrage geändert',
   smtp_update: 'E-Mail-Server geändert', session_end: 'Sitzung beendet', session_end_others: 'Andere Sitzungen beendet', sessions_revoked: 'Benutzer überall abgemeldet', login_blocked: 'Anmeldung gesperrt', status_page: 'Statusseite geändert', maintenance_add: 'Wartung angelegt', maintenance_update: 'Wartung geändert', maintenance_delete: 'Wartung gelöscht', check_add: 'Dienst angelegt', check_update: 'Dienst geändert', check_delete: 'Dienst gelöscht', totp_enabled: '2FA eingeschaltet', totp_disabled: '2FA ausgeschaltet', totp_reset: '2FA zurückgesetzt', push_subscribe: 'Push-Gerät angemeldet',
@@ -1405,7 +1619,7 @@ async function downloadFile(path, body) {
 }
 
 const REPORT_LABEL = { networks: 'Netze', devices: 'Geräte', credentials: 'Zugangsdaten', channels: 'Benachrichtigungskanäle', checks: 'Dienste',
-  alert_rules: 'Alarm-Regeln', maintenance: 'Wartungsfenster', users: 'Benutzer', settings: 'Einstellungen', energy_days: 'Energie-Tageswerte',
+  alert_rules: 'Alarm-Regeln', maintenance: 'Wartungsfenster', users: 'Benutzer', settings: 'Einstellungen', energy_days: 'Energie-Tageswerte', custom_queries: 'Eigene Abfragen',
   sites: 'Sektoren', roles: 'Rollen', groups: 'Gruppen' };
 
 async function viewBackup() {

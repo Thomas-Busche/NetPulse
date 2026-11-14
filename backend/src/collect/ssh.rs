@@ -82,6 +82,20 @@ pub async fn run_command(
     Ok(result?.1)
 }
 
+/// Einzelnen Befehl ausführen und Exit-Code mitliefern (eigene Abfragen und Aktionen)
+pub async fn run_command_status(
+    ip: Ipv4Addr,
+    cred: &Credential,
+    expected_host_key: Option<&str>,
+    command: &str,
+) -> Result<(u32, String, String), SshError> {
+    let (session, host_key) = connect(ip, cred, expected_host_key).await?;
+    let result = exec(&session, command, None).await;
+    let _ = session.disconnect(Disconnect::ByApplication, "", "de").await;
+    let (code, out) = result?;
+    Ok((code, out, host_key))
+}
+
 /// Offene Sitzungen für die Live-Ansicht (Gerät + Zugangsdaten → Sitzung, zuletzt benutzt).
 /// Spart den teuren Verbindungsaufbau alle 2 Sekunden – auf NetPulse und auf dem Gerät.
 type Pool = Mutex<HashMap<(Ipv4Addr, i64), (Arc<Handle<Client>>, std::time::Instant)>>;

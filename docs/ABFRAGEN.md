@@ -317,6 +317,35 @@ systemctl daemon-reload && systemctl enable --now np-shim
 (dann ist er unter der NAS-IP erreichbar, z. B. `https://10.10.10.15:11443`). Bei UniFi müssen die Geräte
 dann allerdings neu auf die NAS-IP „informiert“ werden – die Brücke ist meist einfacher.
 
+## Andere Geräte, Dienste und Hersteller (eigene Abfragen)
+
+Für alles, was NetPulse nicht von selbst kennt, gibt es **allgemeine Zugangsarten** und **eigene Abfragen**:
+
+1. **Zugangsdaten → Hinzufügen** und eine allgemeine Art wählen: SNMP v3/v2c, SSH (Schlüssel/Passwort),
+   **HTTP/REST-API mit Benutzer + Passwort** oder **HTTP/REST-API mit Token**. Im Feld *Hersteller / Dienst* frei
+   eintragen, worum es geht (z. B. „Ugreen“, „Home Assistant“).
+2. Die Zugangsdaten dem Gerät zuordnen (*Geräte → Testen & zuordnen*).
+3. **Eigene Abfragen und Aktionen → Hinzufügen**: Zugangsdaten wählen, Vorlage oder eigenen Befehl/Pfad/OID eintragen,
+   *Testen*, speichern.
+
+Beispiele:
+
+| Gerät/Dienst | Zugang | Abfrage |
+|---|---|---|
+| Ugreen-/Synology-NAS: RAID-Zustand | SSH | `cat /proc/mdstat \| grep -c '\[U*_' \|\| true` → Zahl, 0 = alles gut |
+| TrueNAS: Pool-Zustand | SSH | `zpool list -H -o health` → Text |
+| Home Assistant: Sensor | HTTP/Token (Header `Authorization`, Vorsatz `Bearer `, Port 8123, Protokoll HTTP im LAN) | `/api/states/sensor.xyz`, Wert aus `state` |
+| Proxmox: Version | HTTP/Token (Port 8006, Vorsatz `PVEAPIToken=`, Token `user@pam!name=geheim`) | `/api2/json/version`, Wert aus `data.version` |
+| Portainer | HTTP/Token (Header `X-API-Key`, Vorsatz leer) | `/api/endpoints`, Wert aus `0.Name` |
+| Hersteller-MIB | SNMP | OID aus dem SNMP-Explorer des Geräts |
+
+**Aktionen** (z. B. Herunterfahren) laufen nur auf Knopfdruck in der Geräteansicht (Reiter *Eigene Abfragen*). Für
+Linux reicht ein Benutzer mit genau diesem einen sudo-Recht:
+
+```bash
+echo 'netpulse ALL=(root) NOPASSWD: /sbin/shutdown' | sudo tee /etc/sudoers.d/netpulse-shutdown
+```
+
 ## Fehlersuche
 
 | Meldung in NetPulse | Ursache / Lösung |

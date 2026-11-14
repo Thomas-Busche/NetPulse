@@ -14,6 +14,7 @@ use anyhow::{anyhow, bail, Result};
 use chrono::{DateTime, Utc};
 use futures::{stream, StreamExt};
 use serde::Serialize;
+use serde_json::Value;
 
 use super::{shelly, snmp, ssh, Credential};
 use crate::AppState;
@@ -100,6 +101,15 @@ async fn check(cred: &Credential, t: &Target) -> Result<String> {
             let power = data["power_w"].as_f64().map(|w| format!(" · {w} W")).unwrap_or_default();
             Ok(format!("Shelly ok – {}{power}", data["name"].as_str().or(info.model.as_deref()).unwrap_or("Shelly")))
         }
+        "http_basic" | "http_token" => {
+            let path = cred.options["test_path"].as_str().filter(|p| !p.trim().is_empty()).unwrap_or("/");
+            let reply = super::custom::http_request(ip, cred, t.tls_pin.as_deref(), "GET", path, None).await?;
+            if !reply.status.is_success() {
+                bail!("{} antwortete mit {}", reply.url, reply.status);
+            }
+            let size = reply.body.len();
+            Ok(format!("HTTP-Anmeldung ok – {} antwortete mit {} ({size} Zeichen)", reply.url, reply.status))
+        }
         "unifi" => {
             let (data, _) = super::unifi::collect(ip, cred, t.tls_pin.as_deref()).await?;
             Ok(format!(
@@ -123,14 +133,14 @@ async fn check(cred: &Credential, t: &Target) -> Result<String> {
     }
 }
 
-async fn load_credential(state: &AppState, credential_id: i64) -> Result<Credential> {
-    let (name, kind, username, port, sealed): (String, String, Option<String>, Option<i32>, String) =
-        sqlx::query_as("SELECT name, kind, username, port, secret FROM credentials WHERE id = $1")
+pub(crate) async fn load_credential(state: &AppState, credential_id: i64) -> Result<Credential> {
+    let (name, kind, username, port, sealed, options): (String, String, Option<String>, Option<i32>, String, Value) =
+        sqlx::query_as("SELECT name, kind, username, port, secret, options FROM credentials WHERE id = $1")
             .bind(credential_id)
             .fetch_optional(&state.db)
             .await?
             .ok_or_else(|| anyhow!("Zugangsdaten nicht gefunden"))?;
-    Ok(Credential { id: credential_id, name, kind, username, port, secret: state.vault.open_value(&sealed)?, linked: true })
+    Ok(Credential { id: credential_id, name, kind, username, port, secret: state.vault.open_value(&sealed)?, linked: true, options })
 }
 
 /// Einzeltest gegen ein Gerät (ohne Zuordnung)
@@ -170,6 +180,7 @@ pub async fn start_scan(state: &AppState, credential_id: i64, device_ids: Option
                 "ssh_key" => format!("status = 'up' AND {} = ANY(open_ports)", cred.port.unwrap_or(22)),
                 "http" => "status = 'up' AND integration = 'shelly'".to_string(),
                 "unifi" => bail!("UniFi-Zugangsdaten bitte gezielt dem Controller zuordnen (Gerät auswählen)"),
+                "http_basic" | "http_token" => bail!("HTTP-Zugangsdaten werden nur an ausgewählte Geräte gesendet – bitte Geräte auswählen"),
                 "fritzbox" | "opnsense" | "mikrotik" => bail!("Diese Zugangsdaten bitte gezielt dem Router zuordnen (Gerät auswählen)"),
                 _ => bail!("SSH-Passwörter werden nur an ausgewählte Geräte gesendet – bitte Geräte auswählen"),
             };

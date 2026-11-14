@@ -5,6 +5,7 @@
 //! (SNMP immer, SSH nur mit Schlüssel und nur bei offenem Port) und bei Erfolg fest zugeordnet.
 
 pub mod check;
+pub mod custom;
 pub mod fast;
 pub mod fritzbox;
 pub mod live;
@@ -46,6 +47,9 @@ pub struct Secret {
     pub priv_protocol: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priv_password: Option<String>,
+    /// Token/API-Schlüssel für `http_token`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }
 
 #[derive(Clone)]
@@ -57,6 +61,8 @@ pub struct Credential {
     pub port: Option<i32>,
     pub secret: Secret,
     pub linked: bool,
+    /// Nicht geheime Einstellungen (Hersteller, http/https, Token-Header …)
+    pub options: Value,
 }
 
 impl Credential {
@@ -126,6 +132,7 @@ struct CredentialRow {
     port: Option<i32>,
     secret: String,
     linked: bool,
+    options: Value,
 }
 
 #[derive(sqlx::FromRow)]
@@ -145,7 +152,7 @@ struct DeviceRow {
 
 pub(crate) async fn load_credentials(state: &AppState, device_id: i64) -> Result<Vec<Credential>> {
     let rows: Vec<CredentialRow> = sqlx::query_as(
-        "SELECT c.id, c.name, c.kind, c.username, c.port, c.secret,
+        "SELECT c.id, c.name, c.kind, c.username, c.port, c.secret, c.options,
                 EXISTS (SELECT 1 FROM device_credentials dc WHERE dc.device_id = $1 AND dc.credential_id = c.id) AS linked
            FROM credentials c
           WHERE c.auto OR c.id IN (SELECT credential_id FROM device_credentials WHERE device_id = $1)
@@ -165,6 +172,7 @@ pub(crate) async fn load_credentials(state: &AppState, device_id: i64) -> Result
                 port: row.port,
                 secret,
                 linked: row.linked,
+                options: row.options,
             }),
             Err(e) => tracing::error!("Zugangsdaten {}: {e:#}", row.id),
         }
@@ -430,6 +438,19 @@ pub async fn poll_device(state: &AppState, device_id: i64) -> Result<()> {
         for cred in credentials.iter().filter(|c| c.kind == "http") {
             trace.add(None, format!("„{}“ (HTTP) nicht versucht – gilt nur für Geräte, die sich als Shelly ausgewiesen haben", cred.name));
         }
+    }
+
+    // Eigene Abfragen (frei definierte SSH-Befehle, HTTP-Aufrufe, SNMP-OIDs)
+    match Box::pin(custom::run_for_device(state, device_id)).await {
+        Ok(lines) => {
+            for (ok, line) in lines {
+                if !ok {
+                    errors.push(line.clone());
+                }
+                trace.add(Some(ok), line);
+            }
+        }
+        Err(e) => trace.add(Some(false), format!("Eigene Abfragen: {e:#}")),
     }
 
     if inventory.is_empty() {

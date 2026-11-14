@@ -18,7 +18,11 @@ use crate::{
     AppState,
 };
 
-const KINDS: &[&str] = &["snmp_v2c", "snmp_v3", "ssh_password", "ssh_key", "http", "unifi", "fritzbox", "opnsense", "mikrotik"];
+const KINDS: &[&str] = &[
+    "snmp_v2c", "snmp_v3", "ssh_password", "ssh_key", "http", "http_basic", "http_token", "unifi", "fritzbox", "opnsense", "mikrotik",
+];
+/// Erlaubte nicht geheime Einstellungen (Rest wird verworfen)
+const OPTION_KEYS: &[&str] = &["vendor", "scheme", "header", "prefix", "test_path", "auth"];
 
 #[derive(Serialize, FromRow)]
 pub struct CredentialInfo {
@@ -28,12 +32,15 @@ pub struct CredentialInfo {
     username: Option<String>,
     port: Option<i32>,
     auto: bool,
+    options: Value,
     created_at: DateTime<Utc>,
     device_count: i64,
+    query_count: i64,
 }
 
-const SELECT: &str = "SELECT c.id, c.name, c.kind, c.username, c.port, c.auto, c.created_at,
-                             (SELECT count(*) FROM device_credentials dc WHERE dc.credential_id = c.id) AS device_count
+const SELECT: &str = "SELECT c.id, c.name, c.kind, c.username, c.port, c.auto, c.options, c.created_at,
+                             (SELECT count(*) FROM device_credentials dc WHERE dc.credential_id = c.id) AS device_count,
+                             (SELECT count(*) FROM custom_queries q WHERE q.credential_id = c.id) AS query_count
                         FROM credentials c";
 
 pub async fn list(State(st): State<AppState>, _admin: Need<perm::CredentialsManage>) -> ApiResult<Json<Vec<CredentialInfo>>> {
@@ -48,6 +55,8 @@ pub struct CredentialInput {
     username: Option<String>,
     port: Option<i32>,
     auto: Option<bool>,
+    /// Nicht geheime Einstellungen (Hersteller, http/https, Token-Header …); ersetzt die bisherigen
+    options: Option<Value>,
     /// Nur die mitgeschickten, nicht-leeren Felder werden gesetzt
     #[serde(default)]
     secret: Secret,
@@ -64,9 +73,9 @@ fn validate(kind: &str, auto: bool) -> ApiResult<()> {
                 .into(),
         ));
     }
-    if auto && (kind == "unifi" || crate::collect::API_KINDS.contains(&kind)) {
+    if auto && (kind == "unifi" || kind == "http_basic" || kind == "http_token" || crate::collect::API_KINDS.contains(&kind)) {
         return Err(ApiError::BadRequest(
-            "Diese Zugangsdaten werden nur dem jeweiligen Gerät (Controller/Router) fest zugeordnet und nie automatisch ausprobiert.".into(),
+            "Diese Zugangsdaten werden nur den ausgewählten Geräten fest zugeordnet und nie automatisch ausprobiert.".into(),
         ));
     }
     if auto && kind == "ssh_password" {
@@ -95,7 +104,51 @@ fn merge(mut base: Secret, update: Secret) -> Secret {
     keep(&mut base.auth_password, update.auth_password);
     keep(&mut base.priv_protocol, update.priv_protocol);
     keep(&mut base.priv_password, update.priv_password);
+    keep(&mut base.token, update.token);
     base
+}
+
+/// Nur bekannte, kurze Text-Einstellungen übernehmen
+fn clean_options(input: Option<&Value>) -> ApiResult<Value> {
+    let mut out = serde_json::Map::new();
+    if let Some(map) = input.and_then(Value::as_object) {
+        for (key, value) in map {
+            if !OPTION_KEYS.contains(&key.as_str()) {
+                continue;
+            }
+            let Some(text) = value.as_str() else { continue };
+            if text.chars().count() > 200 {
+                return Err(ApiError::BadRequest(format!("Einstellung „{key}“ ist zu lang (max. 200 Zeichen)")));
+            }
+            // Leerer Vorsatz ist sinnvoll (z. B. „X-API-Key: <token>“), sonst leere Felder weglassen
+            if key == "prefix" {
+                out.insert(key.clone(), Value::String(text.to_string()));
+            } else if !text.trim().is_empty() {
+                out.insert(key.clone(), Value::String(text.trim().to_string()));
+            }
+        }
+    }
+    if let Some(scheme) = out.get("scheme").and_then(Value::as_str) {
+        if scheme != "http" && scheme != "https" {
+            return Err(ApiError::BadRequest("Protokoll muss http oder https sein".into()));
+        }
+    }
+    if let Some(header) = out.get("header").and_then(Value::as_str) {
+        if !header.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            return Err(ApiError::BadRequest("Header-Name darf nur Buchstaben, Ziffern, „-“ und „_“ enthalten".into()));
+        }
+    }
+    if let Some(prefix) = out.get("prefix").and_then(Value::as_str) {
+        if prefix.chars().any(char::is_control) {
+            return Err(ApiError::BadRequest("Vorsatz darf keine Steuerzeichen enthalten".into()));
+        }
+    }
+    if let Some(path) = out.get("test_path").and_then(Value::as_str) {
+        if !path.starts_with('/') {
+            return Err(ApiError::BadRequest("Test-Pfad muss mit „/“ beginnen".into()));
+        }
+    }
+    Ok(Value::Object(out))
 }
 
 pub async fn create(
@@ -112,19 +165,21 @@ pub async fn create(
     let secret = merge(Secret::default(), req.secret);
     let missing = match kind {
         "snmp_v2c" => secret.community.is_none(),
-        "ssh_password" | "http" => secret.password.is_none(),
+        "ssh_password" | "http" | "http_basic" => secret.password.is_none(),
+        "http_token" => secret.token.is_none(),
         "ssh_key" => secret.private_key.is_none(),
         _ => false,
     };
     if missing {
-        return Err(ApiError::BadRequest("Bitte Community, Passwort bzw. Schlüssel angeben".into()));
+        return Err(ApiError::BadRequest("Bitte Community, Passwort, Token bzw. Schlüssel angeben".into()));
     }
     if kind.starts_with("ssh") && req.username.as_deref().unwrap_or_default().trim().is_empty() {
         return Err(ApiError::BadRequest("Bitte einen Benutzernamen angeben".into()));
     }
+    let options = clean_options(req.options.as_ref())?;
     let sealed = st.vault.seal(&secret)?;
     let (id,): (i64,) = sqlx::query_as(
-        "INSERT INTO credentials (name, kind, username, port, secret, auto) VALUES ($1, $2, $3, $4, $5, $6)
+        "INSERT INTO credentials (name, kind, username, port, secret, auto, options) VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (name) DO NOTHING RETURNING id",
     )
     .bind(name)
@@ -133,6 +188,7 @@ pub async fn create(
     .bind(req.port)
     .bind(sealed)
     .bind(auto)
+    .bind(&options)
     .fetch_optional(&st.db)
     .await?
     .ok_or_else(|| ApiError::BadRequest(format!("Zugangsdaten „{name}“ existieren bereits")))?;
@@ -171,7 +227,7 @@ pub async fn update(
         "UPDATE credentials SET
             name = COALESCE(NULLIF(trim($2), ''), name),
             username = CASE WHEN $3::text IS NULL THEN username ELSE NULLIF(trim($3), '') END,
-            port = $4, secret = $5, auto = $6
+            port = $4, secret = $5, auto = $6, options = COALESCE($7, options)
           WHERE id = $1",
     )
     .bind(id)
@@ -180,6 +236,7 @@ pub async fn update(
     .bind(req.port)
     .bind(st.vault.seal(&secret)?)
     .bind(auto)
+    .bind(req.options.as_ref().map(|o| clean_options(Some(o))).transpose()?)
     .execute(&st.db)
     .await?;
     audit::by(&st.db, &user, "credential_update", json!({ "id": id })).await;

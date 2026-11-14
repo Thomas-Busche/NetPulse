@@ -475,7 +475,7 @@ mod tests {
     }
 
     fn cred(port: Option<i32>) -> Credential {
-        Credential { id: 1, name: "UniFi".into(), kind: "unifi".into(), username: None, port, secret: Default::default(), linked: true }
+        Credential { id: 1, name: "UniFi".into(), kind: "unifi".into(), username: None, port, secret: Default::default(), linked: true, options: serde_json::Value::Null }
     }
 
     #[test]

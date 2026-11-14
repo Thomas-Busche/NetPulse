@@ -389,6 +389,7 @@ async function viewDevice(id) {
   const canDev = (perm) => can(perm, data.device.site_id);
   const credentials = can('credentials.manage') ? await api('/credentials').catch(() => []) : [];
   const allDevices = canDev('devices.manage') ? await api('/devices').catch(() => []) : [];
+  let customQueries = await api(`/devices/${encodeURIComponent(id)}/queries`).catch(() => []);
   await loadSites();
 
   const tabs = () => {
@@ -402,6 +403,7 @@ async function viewDevice(id) {
     if (inv.ssh || inv.snmp || inv.shelly || data.unifi_device || data.net_client) list.push(['system', 'System']);
     if ((inv.ssh && inv.ssh.interfaces && inv.ssh.interfaces.length) || (inv.snmp && inv.snmp.interfaces)) list.push(['interfaces', 'Schnittstellen']);
     if ((inv.ssh && inv.ssh.disks && inv.ssh.disks.length) || (inv.snmp && inv.snmp.storage && inv.snmp.storage.length)) list.push(['storage', 'Speicher']);
+    if (customQueries.length) list.push(['custom', 'Eigene Abfragen']);
     list.push(['history', 'Verlauf']);
     list.push(['events', 'Ereignisse']);
     if (canDev('devices.diagnose') && inv.snmp) list.push(['explorer', 'SNMP-Explorer']);
@@ -449,7 +451,7 @@ async function viewDevice(id) {
       setTimeout(reload, 8000);
     }, 'Abfrage gestartet – Ergebnisse erscheinen in wenigen Sekunden'));
     const body = $('#tab-body');
-    const renderers = { overview: tabOverview, live: isShelly() ? tabShellyLive : tabLive, diagnose: tabDiagnose, syslog: () => '<div id="dev-syslog"><div class="empty">Lade …</div></div>', system: tabSystem, interfaces: tabInterfaces, storage: tabStorage, history: tabHistory, events: tabEvents, explorer: tabExplorer, settings: tabSettings, unifi: tabUnifi, clients: () => '<div id="uc-area"><div class="empty">Lade …</div></div>' };
+    const renderers = { overview: tabOverview, live: isShelly() ? tabShellyLive : tabLive, diagnose: tabDiagnose, syslog: () => '<div id="dev-syslog"><div class="empty">Lade …</div></div>', system: tabSystem, interfaces: tabInterfaces, storage: tabStorage, history: tabHistory, events: tabEvents, explorer: tabExplorer, settings: tabSettings, custom: tabCustom, unifi: tabUnifi, clients: () => '<div id="uc-area"><div class="empty">Lade …</div></div>' };
     body.innerHTML = (renderers[tab] || tabOverview)();
     applyWidths(body);
     if (tab === 'settings') bindSettings();
@@ -467,6 +469,7 @@ async function viewDevice(id) {
     if (tab === 'unifi') bindUnifi();
     if (tab === 'clients') bindClients();
     if (tab === 'explorer') bindExplorer();
+    if (tab === 'custom') bindCustom();
     $('#range')?.addEventListener('change', (ev) => { hours = Number(ev.target.value); reload(); });
     $('#goto-diagnose')?.addEventListener('click', (ev) => { ev.preventDefault(); tab = 'diagnose'; render(); });
   };
@@ -713,6 +716,58 @@ async function viewDevice(id) {
     };
     update();
     onLive((msg) => { if (msg.type === 'shelly' && (msg.full || (msg.devices || []).some((d) => d.id === Number(id)))) update(); });
+  }
+
+  // ----- Eigene Abfragen und Aktionen -----
+  function tabCustom() {
+    const reads = customQueries.filter((q) => q.mode === 'read');
+    const actions = customQueries.filter((q) => q.mode === 'action');
+    const value = (q) => {
+      if (q.value_num != null) return `${Number(q.value_num).toLocaleString('de-DE', { maximumFractionDigits: 2 })}${q.unit ? ` ${q.unit}` : ''}`;
+      if (q.value_text != null) return `${q.value_text}${q.unit ? ` ${q.unit}` : ''}`;
+      return '–';
+    };
+    const status = (q) => (q.ok == null ? '<span class="muted small">noch nicht gelaufen</span>'
+      : q.ok ? `<span class="ok small">${icon('circle-check', 'i-sm')} ${esc(fmtAgo(q.time))}</span>`
+        : `<span class="error small" title="${esc(q.error || '')}">${icon('circle-x', 'i-sm')} ${esc(q.error || 'Fehler')}</span>`);
+    return `${reads.length ? `<section><h3>Abfragen</h3><div class="table-wrap"><table><thead><tr><th>Name</th><th>Wert</th><th>Zuletzt</th><th>Zugangsdaten</th><th></th></tr></thead>
+      <tbody>${reads.map((q) => `<tr><td>${esc(q.name)}</td><td class="cq-value">${esc(value(q))}</td><td>${status(q)}</td><td class="muted small">${esc(q.credential_name)}</td>
+        <td class="actions">${canDev('devices.diagnose') ? `<button type="button" class="ghost sm" data-qrun="${q.id}" title="Jetzt abfragen">${icon('refresh', 'i-sm')}</button>` : ''}</td></tr>`).join('')}</tbody></table></div>
+      <div id="cq-chart"></div></section>` : ''}
+      ${actions.length ? `<section><h3>Aktionen</h3><div class="table-wrap"><table><thead><tr><th>Name</th><th>Zuletzt</th><th>Zugangsdaten</th><th></th></tr></thead>
+      <tbody>${actions.map((q) => `<tr><td>${esc(q.name)}</td><td>${status(q)}</td><td class="muted small">${esc(q.credential_name)}</td>
+        <td class="actions">${canDev('devices.manage') ? `<button type="button" class="sm" data-qact="${q.id}">${icon('player-play', 'i-sm')}Ausführen</button>` : ''}</td></tr>`).join('')}</tbody></table></div></section>` : ''}
+      ${can('credentials.manage') ? '<p class="muted small">Abfragen und Aktionen verwaltest du unter <a href="#/credentials">Zugangsdaten → Eigene Abfragen</a>.</p>' : ''}`;
+  }
+
+  function bindCustom() {
+    const refresh = async () => { customQueries = await api(`/devices/${id}/queries`).catch(() => customQueries); render(); };
+    const run = async (btn, qid) => {
+      btn.disabled = true;
+      try {
+        const r = await api(`/queries/${qid}/run`, { method: 'POST', body: { device_id: Number(id) } });
+        toast(r.message, !r.ok);
+        await refresh();
+      } catch (e) {
+        toast(e.message, true);
+        btn.disabled = false;
+      }
+    };
+    $$('[data-qrun]').forEach((b) => b.addEventListener('click', () => run(b, b.dataset.qrun)));
+    $$('[data-qact]').forEach((b) => b.addEventListener('click', () => {
+      const q = customQueries.find((x) => x.id === Number(b.dataset.qact));
+      if (!confirm(`Aktion „${q.name}“ jetzt auf ${deviceLabel(data.device)} ausführen?`)) return;
+      run(b, q.id);
+    }));
+    // Verlauf der Zahlen-Abfragen (höchstens vier)
+    const numeric = customQueries.filter((q) => q.mode === 'read' && q.value_type === 'number').slice(0, 4);
+    const box = $('#cq-chart');
+    if (box && numeric.length) {
+      Promise.all(numeric.map((q) => api(`/queries/${q.id}/history/${id}`).catch(() => []))).then((series) => {
+        box.innerHTML = numeric.map((q, i) => (series[i].length > 1 ? `<h3>${esc(q.name)} <span class="muted">· 7 Tage</span></h3>
+          ${lineChart(series[i], { series: [{ key: 'value', label: q.name }], format: (v) => `${Number(v).toLocaleString('de-DE', { maximumFractionDigits: 2 })}${q.unit ? ` ${q.unit}` : ''}`, width: 760 })}` : '')).join('');
+      });
+    }
   }
 
   // ----- Diagnose -----

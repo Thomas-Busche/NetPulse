@@ -140,7 +140,7 @@ pub async fn export(state: &AppState) -> Result<Value> {
         sealed.as_str().and_then(|s| vault.open_value::<Value>(s).ok()).unwrap_or(Value::Null)
     };
 
-    let mut credentials = rows(db, "SELECT id, name, kind, username, port, secret, auto FROM credentials").await?;
+    let mut credentials = rows(db, "SELECT id, name, kind, username, port, secret, auto, options FROM credentials").await?;
     for c in &mut credentials {
         c["secret"] = open(&c["secret"]);
     }
@@ -188,6 +188,8 @@ pub async fn export(state: &AppState) -> Result<Value> {
                                     vendor, model, os, reported_name, integration, first_seen, open_ports, site_id, tags
                                FROM devices").await?,
         "device_credentials": rows(db, "SELECT device_id, credential_id FROM device_credentials").await?,
+        "custom_queries": rows(db, "SELECT name, credential_id, mode, target, method, body, extract, value_type, unit, device_ids, enabled
+                                      FROM custom_queries").await?,
         "channels": channels,
         "checks": rows(db, "SELECT id, name, kind, target, config, interval_s, timeout_s, device_id, enabled, site_id FROM checks").await?,
         "alert_rules": rows(db, "SELECT name, kind, device_id, threshold, duration_min, channel_ids, notify_recovery, enabled,
@@ -217,6 +219,7 @@ pub struct RestoreReport {
     pub networks: usize,
     pub devices: usize,
     pub credentials: usize,
+    pub custom_queries: usize,
     pub channels: usize,
     pub checks: usize,
     pub alert_rules: usize,
@@ -334,21 +337,23 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
         }
         let sealed = vault.seal(&c["secret"])?;
         let port = c["port"].as_i64().map(|v| v as i32);
+        let options = c.get("options").filter(|o| o.is_object()).cloned().unwrap_or_else(|| json!({}));
         let id = match find(&mut tx, "SELECT id FROM credentials WHERE name = $1 AND kind = $2 ORDER BY id LIMIT 1", &[name, kind]).await? {
             Some(id) => {
-                sqlx::query("UPDATE credentials SET username = $2, port = $3, secret = $4, auto = $5 WHERE id = $1")
+                sqlx::query("UPDATE credentials SET username = $2, port = $3, secret = $4, auto = $5, options = $6 WHERE id = $1")
                     .bind(id)
                     .bind(s(&c["username"]))
                     .bind(port)
                     .bind(&sealed)
                     .bind(c["auto"].as_bool().unwrap_or(false))
+                    .bind(&options)
                     .execute(&mut *tx)
                     .await?;
                 id
             }
             None => {
                 sqlx::query_scalar(
-                    "INSERT INTO credentials (name, kind, username, port, secret, auto) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+                    "INSERT INTO credentials (name, kind, username, port, secret, auto, options) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
                 )
                 .bind(name)
                 .bind(kind)
@@ -356,6 +361,7 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
                 .bind(port)
                 .bind(&sealed)
                 .bind(c["auto"].as_bool().unwrap_or(false))
+                .bind(&options)
                 .fetch_one(&mut *tx)
                 .await?
             }
@@ -417,6 +423,36 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
                 .execute(&mut *tx)
                 .await?;
         }
+    }
+
+    // Eigene Abfragen (je Zugangsangabe + Name)
+    for q in list(p, "custom_queries") {
+        let (Some(cred), Some(name), Some(target)) = (map_id(&cred_ids, &q["credential_id"]), q["name"].as_str(), q["target"].as_str()) else {
+            continue;
+        };
+        let device_ids: Option<Vec<i64>> =
+            q["device_ids"].as_array().map(|ids| ids.iter().filter_map(|id| map_id(&dev_ids, id)).collect());
+        sqlx::query(
+            "INSERT INTO custom_queries (name, credential_id, mode, target, method, body, extract, value_type, unit, device_ids, enabled)
+             VALUES ($1, $2, COALESCE($3, 'read'), $4, COALESCE($5, 'GET'), $6, $7, COALESCE($8, 'text'), $9, $10, COALESCE($11, true))
+             ON CONFLICT (credential_id, name) DO UPDATE SET mode = EXCLUDED.mode, target = EXCLUDED.target, method = EXCLUDED.method,
+                body = EXCLUDED.body, extract = EXCLUDED.extract, value_type = EXCLUDED.value_type, unit = EXCLUDED.unit,
+                device_ids = EXCLUDED.device_ids, enabled = EXCLUDED.enabled",
+        )
+        .bind(name)
+        .bind(cred)
+        .bind(s(&q["mode"]))
+        .bind(target)
+        .bind(s(&q["method"]))
+        .bind(s(&q["body"]))
+        .bind(s(&q["extract"]))
+        .bind(s(&q["value_type"]))
+        .bind(s(&q["unit"]))
+        .bind(device_ids)
+        .bind(q["enabled"].as_bool())
+        .execute(&mut *tx)
+        .await?;
+        report.custom_queries += 1;
     }
 
     // Benachrichtigungskanäle (Name)

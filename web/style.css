@@ -1041,3 +1041,8 @@ body.kiosk .ls-table { font-size: 15px; }
 .wz-tile b { font-size: 24px; color: var(--text); }
 .wz-types { display: flex; gap: 6px; flex-wrap: wrap; }
 .wz-types a { text-decoration: none; }
+
+/* Eigene Abfragen */
+.form-row > label.narrow { flex: 0 0 9rem; }
+pre.pre-wrap { white-space: pre-wrap; word-break: break-word; max-height: 18rem; overflow: auto; background: var(--surface-2); padding: 8px 10px; border-radius: 8px; }
+.cq-value { font-variant-numeric: tabular-nums; font-weight: 600; }
