@@ -1,8 +1,8 @@
-<img src="docs/buschehome-logo.png" alt="BuscheHome" width="96" align="right">
+<a href="https://www.buschehome.de"><img src="docs/buschehome-logo.png" alt="BuscheHome" width="96" align="right"></a>
 
 # NetPulse – agentenloses Netzwerk-Monitoring
 
-*Ein Projekt von **BuscheHome**.*
+*Ein Projekt von [**BuscheHome**](https://www.buschehome.de).*
 
 NetPulse findet automatisch alle Geräte in deinen Netzen und prüft sie laufend auf Erreichbarkeit.
 Die Ergebnisse zeigt ein konfigurierbares Web-Dashboard. Auf den Zielgeräten muss **nichts
