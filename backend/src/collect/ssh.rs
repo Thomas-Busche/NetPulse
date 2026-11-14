@@ -82,15 +82,17 @@ pub async fn run_command(
     Ok(result?.1)
 }
 
-/// Einzelnen Befehl ausführen und Exit-Code mitliefern (eigene Abfragen und Aktionen)
-pub async fn run_command_status(
+/// Befehl ausführen, optional mit einem Skript über stdin (für Aktionen wie „Herunterfahren“, `power.rs`).
+/// Liefert (Exit-Code, Ausgabe, Host-Schlüssel). Kein Pool: Aktionen sind selten.
+pub async fn run_action(
     ip: Ipv4Addr,
     cred: &Credential,
     expected_host_key: Option<&str>,
     command: &str,
+    stdin: Option<&str>,
 ) -> Result<(u32, String, String), SshError> {
     let (session, host_key) = connect(ip, cred, expected_host_key).await?;
-    let result = exec(&session, command, None).await;
+    let result = exec(&session, command, stdin.map(str::as_bytes)).await;
     let _ = session.disconnect(Disconnect::ByApplication, "", "de").await;
     let (code, out) = result?;
     Ok((code, out, host_key))
@@ -563,3 +565,4 @@ mod tests {
         assert_eq!(v["disks"][0]["pct"], 75.0);
     }
 }
+

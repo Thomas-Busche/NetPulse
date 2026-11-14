@@ -185,7 +185,7 @@ pub async fn export(state: &AppState) -> Result<Value> {
         "credentials": credentials,
         "devices": rows(db, "SELECT id, host(ip) AS ip, mac, hostname, name, notes, monitored, device_type, device_type_manual,
                                     wan_interface, wan_interface_manual, parent_id, parent_manual, energy_role, ssh_host_key, tls_pin,
-                                    vendor, model, os, reported_name, integration, first_seen, open_ports, site_id, tags
+                                    vendor, model, os, reported_name, integration, first_seen, open_ports, site_id, tags, power
                                FROM devices").await?,
         "device_credentials": rows(db, "SELECT device_id, credential_id FROM device_credentials").await?,
         "custom_queries": rows(db, "SELECT name, credential_id, mode, target, method, body, extract, value_type, unit, device_ids, enabled
@@ -197,6 +197,9 @@ pub async fn export(state: &AppState) -> Result<Value> {
                                         escalate_channel_ids, escalate_group_ids FROM alert_rules").await?,
         "maintenance": rows(db, "SELECT name, kind, starts_at, ends_at, days, time_from, time_to, device_ids, check_ids, site_ids, enabled
                                    FROM maintenance_windows").await?,
+        "device_groups": rows(db, "SELECT id, name, notes FROM device_groups").await?,
+        "device_group_members": rows(db, "SELECT group_id, device_id FROM device_group_members").await?,
+        "power_schedules": rows(db, "SELECT name, action, days, time, device_ids, group_ids, enabled FROM power_schedules").await?,
         "users": users,
         "roles": rows(db, "SELECT id, name, description, permissions, all_permissions, builtin FROM roles").await?,
         "groups": rows(db, "SELECT id, name, description, oidc_group FROM user_groups").await?,
@@ -224,6 +227,8 @@ pub struct RestoreReport {
     pub checks: usize,
     pub alert_rules: usize,
     pub maintenance: usize,
+    pub device_groups: usize,
+    pub power_schedules: usize,
     pub users: usize,
     pub roles: usize,
     pub groups: usize,
@@ -453,6 +458,56 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
         .execute(&mut *tx)
         .await?;
         report.custom_queries += 1;
+    }
+
+    // Ein/Aus: Einstellungen je Gerät (Verweise auf Zugangsdaten umschreiben), Gruppen (Name), Zeitpläne (Name)
+    for d in list(p, "devices") {
+        let (Some(id), Some(power)) = (map_id(&dev_ids, &d["id"]), d["power"].as_object()) else { continue };
+        let mut power = Value::Object(power.clone());
+        for key in ["ssh_credential_id", "http_credential_id"] {
+            if !power[key].is_null() {
+                power[key] = json!(map_id(&cred_ids, &power[key]));
+            }
+        }
+        sqlx::query("UPDATE devices SET power = $2 WHERE id = $1").bind(id).bind(&power).execute(&mut *tx).await?;
+    }
+    let mut dev_group_ids = Ids::new();
+    for g in list(p, "device_groups") {
+        let (Some(old), Some(name)) = (g["id"].as_i64(), g["name"].as_str()) else { continue };
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO device_groups (name, notes) VALUES ($1, $2) ON CONFLICT (name) DO UPDATE SET notes = EXCLUDED.notes RETURNING id",
+        )
+        .bind(name)
+        .bind(g["notes"].as_str())
+        .fetch_one(&mut *tx)
+        .await?;
+        dev_group_ids.insert(old, id);
+        report.device_groups += 1;
+    }
+    for m in list(p, "device_group_members") {
+        if let (Some(group), Some(dev)) = (map_id(&dev_group_ids, &m["group_id"]), map_id(&dev_ids, &m["device_id"])) {
+            sqlx::query("INSERT INTO device_group_members (group_id, device_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+                .bind(group)
+                .bind(dev)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+    for ps in list(p, "power_schedules") {
+        let Some(name) = ps["name"].as_str() else { continue };
+        let mut row = ps.clone();
+        row["device_ids"] = json!(map_ids(&dev_ids, &ps["device_ids"]));
+        row["group_ids"] = json!(map_ids(&dev_group_ids, &ps["group_ids"]));
+        sqlx::query("DELETE FROM power_schedules WHERE name = $1").bind(name).execute(&mut *tx).await?;
+        sqlx::query(
+            "INSERT INTO power_schedules (name, action, days, time, device_ids, group_ids, enabled, last_run_at)
+             SELECT r.name, r.action, r.days, r.time, COALESCE(r.device_ids, '{}'), COALESCE(r.group_ids, '{}'), COALESCE(r.enabled, true), now()
+               FROM jsonb_to_record($1) AS r(name text, action text, days int[], time text, device_ids bigint[], group_ids bigint[], enabled bool)",
+        )
+        .bind(&row)
+        .execute(&mut *tx)
+        .await?;
+        report.power_schedules += 1;
     }
 
     // Benachrichtigungskanäle (Name)

@@ -193,6 +193,7 @@ main#view { padding: 24px 28px 48px; max-width: 1500px; width: 100%; }
 .badge.st-unknown, .badge.plain { background: var(--unknown-soft); color: var(--unknown); }
 .badge.ev-discovered, .badge.info { background: var(--info-soft); color: var(--info); }
 .badge.ev-mac_changed, .badge.ev-ssh_key_changed, .badge.warn { background: var(--warn-soft); color: var(--warn); }
+.badge.ev-power_wake, .badge.ev-power_shutdown { background: var(--accent-soft); color: var(--accent); }
 .badge.accent { background: var(--accent-soft); color: var(--accent); }
 .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; background: var(--unknown); flex: none; }
 .dot.up { background: var(--up); box-shadow: 0 0 0 3px var(--up-soft); }

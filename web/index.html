@@ -14,7 +14,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <meta name="apple-mobile-web-app-title" content="NetPulse">
-  <link rel="stylesheet" href="style.css?v=0.9.18">
+  <link rel="stylesheet" href="style.css?v=0.9.19">
 </head>
 <body>
   <div id="app" class="shell" hidden>
@@ -25,47 +25,48 @@
       </a>
       <nav id="nav">
         <p class="nav-label">Übersicht</p>
-        <a href="#/dashboard"><svg class="i"><use href="icons.svg?v=0.9.18#i-layout-dashboard"/></svg>Dashboard</a>
-        <a href="#/leitstand"><svg class="i"><use href="icons.svg?v=0.9.18#i-device-desktop"/></svg>Leitstand</a>
-        <a href="#/sites"><svg class="i"><use href="icons.svg?v=0.9.18#i-building"/></svg>Sektoren</a>
-        <a href="#/devices"><svg class="i"><use href="icons.svg?v=0.9.18#i-devices"/></svg>Geräte</a>
-        <a href="#/alerts"><svg class="i"><use href="icons.svg?v=0.9.18#i-bell"/></svg>Alarme<span class="nav-badge" id="alert-badge" hidden></span></a>
-        <a href="#/checks"><svg class="i"><use href="icons.svg?v=0.9.18#i-world-www"/></svg>Dienste</a>
-        <a href="#/map"><svg class="i"><use href="icons.svg?v=0.9.18#i-hierarchy-2"/></svg>Netzwerkkarte</a>
-        <a href="#/energy"><svg class="i"><use href="icons.svg?v=0.9.18#i-bolt"/></svg>Energie</a>
-        <a href="#/events"><svg class="i"><use href="icons.svg?v=0.9.18#i-list-details"/></svg>Ereignisse</a>
-        <a href="https://github.com/Thomas-Busche/NetPulse/blob/main/docs/HANDBUCH.md" target="_blank" rel="noopener noreferrer"><svg class="i"><use href="icons.svg?v=0.9.18#i-info-circle"/></svg>Handbuch</a>
+        <a href="#/dashboard"><svg class="i"><use href="icons.svg?v=0.9.19#i-layout-dashboard"/></svg>Dashboard</a>
+        <a href="#/leitstand"><svg class="i"><use href="icons.svg?v=0.9.19#i-device-desktop"/></svg>Leitstand</a>
+        <a href="#/sites"><svg class="i"><use href="icons.svg?v=0.9.19#i-building"/></svg>Sektoren</a>
+        <a href="#/devices"><svg class="i"><use href="icons.svg?v=0.9.19#i-devices"/></svg>Geräte</a>
+        <a href="#/alerts"><svg class="i"><use href="icons.svg?v=0.9.19#i-bell"/></svg>Alarme<span class="nav-badge" id="alert-badge" hidden></span></a>
+        <a href="#/checks"><svg class="i"><use href="icons.svg?v=0.9.19#i-world-www"/></svg>Dienste</a>
+        <a href="#/map"><svg class="i"><use href="icons.svg?v=0.9.19#i-hierarchy-2"/></svg>Netzwerkkarte</a>
+        <a href="#/energy"><svg class="i"><use href="icons.svg?v=0.9.19#i-bolt"/></svg>Energie</a>
+        <a href="#/power"><svg class="i"><use href="icons.svg?v=0.9.19#i-power"/></svg>Ein/Aus</a>
+        <a href="#/events"><svg class="i"><use href="icons.svg?v=0.9.19#i-list-details"/></svg>Ereignisse</a>
+        <a href="https://github.com/Thomas-Busche/NetPulse/blob/main/docs/HANDBUCH.md" target="_blank" rel="noopener noreferrer"><svg class="i"><use href="icons.svg?v=0.9.19#i-info-circle"/></svg>Handbuch</a>
         <p class="nav-label" data-perm="alerts.manage audit.view backup.manage credentials.manage devices.diagnose maintenance.manage networks.manage settings.manage users.manage">Verwaltung</p>
-        <a href="#/setup" data-perm="networks.manage"><svg class="i"><use href="icons.svg?v=0.9.18#i-wand"/></svg>Einrichtung</a>
-        <a href="#/networks" data-perm="networks.manage"><svg class="i"><use href="icons.svg?v=0.9.18#i-topology-star-3"/></svg>Netzwerke</a>
-        <a href="#/credentials" data-perm="credentials.manage"><svg class="i"><use href="icons.svg?v=0.9.18#i-key"/></svg>Zugangsdaten</a>
-        <a href="#/syslog" data-perm="devices.diagnose"><svg class="i"><use href="icons.svg?v=0.9.18#i-file-text"/></svg>Protokolle</a>
-        <a href="#/statuspage" data-perm="settings.manage"><svg class="i"><use href="icons.svg?v=0.9.18#i-world"/></svg>Statusseite</a>
-        <a href="#/integrations" data-perm="settings.manage"><svg class="i"><use href="icons.svg?v=0.9.18#i-plug-connected"/></svg>Verbundene Programme</a>
-        <a href="#/maintenance" data-perm="maintenance.manage"><svg class="i"><use href="icons.svg?v=0.9.18#i-calendar-time"/></svg>Wartung</a>
-        <a href="#/channels" data-perm="alerts.manage"><svg class="i"><use href="icons.svg?v=0.9.18#i-send"/></svg>Benachrichtigungen</a>
-        <a href="#/users" data-perm="users.manage"><svg class="i"><use href="icons.svg?v=0.9.18#i-users"/></svg>Benutzer</a>
-        <a href="#/audit" data-perm="audit.view"><svg class="i"><use href="icons.svg?v=0.9.18#i-shield-lock"/></svg>Audit-Log</a>
-        <a href="#/logs" data-perm="audit.view"><svg class="i"><use href="icons.svg?v=0.9.18#i-file-text"/></svg>System-Log</a>
-        <a href="#/backup" data-perm="backup.manage"><svg class="i"><use href="icons.svg?v=0.9.18#i-database"/></svg>Sicherung</a>
+        <a href="#/setup" data-perm="networks.manage"><svg class="i"><use href="icons.svg?v=0.9.19#i-wand"/></svg>Einrichtung</a>
+        <a href="#/networks" data-perm="networks.manage"><svg class="i"><use href="icons.svg?v=0.9.19#i-topology-star-3"/></svg>Netzwerke</a>
+        <a href="#/credentials" data-perm="credentials.manage"><svg class="i"><use href="icons.svg?v=0.9.19#i-key"/></svg>Zugangsdaten</a>
+        <a href="#/syslog" data-perm="devices.diagnose"><svg class="i"><use href="icons.svg?v=0.9.19#i-file-text"/></svg>Protokolle</a>
+        <a href="#/statuspage" data-perm="settings.manage"><svg class="i"><use href="icons.svg?v=0.9.19#i-world"/></svg>Statusseite</a>
+        <a href="#/integrations" data-perm="settings.manage"><svg class="i"><use href="icons.svg?v=0.9.19#i-plug-connected"/></svg>Verbundene Programme</a>
+        <a href="#/maintenance" data-perm="maintenance.manage"><svg class="i"><use href="icons.svg?v=0.9.19#i-calendar-time"/></svg>Wartung</a>
+        <a href="#/channels" data-perm="alerts.manage"><svg class="i"><use href="icons.svg?v=0.9.19#i-send"/></svg>Benachrichtigungen</a>
+        <a href="#/users" data-perm="users.manage"><svg class="i"><use href="icons.svg?v=0.9.19#i-users"/></svg>Benutzer</a>
+        <a href="#/audit" data-perm="audit.view"><svg class="i"><use href="icons.svg?v=0.9.19#i-shield-lock"/></svg>Audit-Log</a>
+        <a href="#/logs" data-perm="audit.view"><svg class="i"><use href="icons.svg?v=0.9.19#i-file-text"/></svg>System-Log</a>
+        <a href="#/backup" data-perm="backup.manage"><svg class="i"><use href="icons.svg?v=0.9.19#i-database"/></svg>Sicherung</a>
       </nav>
       <div class="scan-mini" id="scan-mini" hidden></div>
       <div class="maker-row"><a class="maker" href="https://www.buschehome.de" target="_blank" rel="noopener noreferrer" title="NetPulse ist ein Projekt von BuscheHome – www.buschehome.de"><img src="buschehome.png" alt="" width="22" height="22"><span>von <b>BuscheHome</b></span></a><a class="maker-src" href="https://github.com/Thomas-Busche/NetPulse" target="_blank" rel="noopener noreferrer" title="Quellcode und Lizenz (AGPL-3.0) auf GitHub">Quellcode</a></div>
       <div class="sidebar-foot">
-        <a href="#/account" class="user-chip" id="user-chip"><svg class="i"><use href="icons.svg?v=0.9.18#i-user"/></svg><span id="user-name"></span></a>
-        <button class="icon-btn" id="theme-toggle" type="button" title="Hell/Dunkel umschalten"><svg class="i"><use href="icons.svg?v=0.9.18#i-moon"/></svg></button>
-        <button class="icon-btn" id="logout" type="button" title="Abmelden"><svg class="i"><use href="icons.svg?v=0.9.18#i-logout"/></svg></button>
+        <a href="#/account" class="user-chip" id="user-chip"><svg class="i"><use href="icons.svg?v=0.9.19#i-user"/></svg><span id="user-name"></span></a>
+        <button class="icon-btn" id="theme-toggle" type="button" title="Hell/Dunkel umschalten"><svg class="i"><use href="icons.svg?v=0.9.19#i-moon"/></svg></button>
+        <button class="icon-btn" id="logout" type="button" title="Abmelden"><svg class="i"><use href="icons.svg?v=0.9.19#i-logout"/></svg></button>
       </div>
     </aside>
     <div class="main">
       <header class="topbar">
-        <button class="icon-btn menu-btn" id="menu-toggle" type="button" title="Menü"><svg class="i"><use href="icons.svg?v=0.9.18#i-menu-2"/></svg></button>
+        <button class="icon-btn menu-btn" id="menu-toggle" type="button" title="Menü"><svg class="i"><use href="icons.svg?v=0.9.19#i-menu-2"/></svg></button>
         <h1 id="page-title">Dashboard</h1>
         <button type="button" class="ghost sm install-btn" data-install hidden>App installieren</button>
         <div class="sys-strip" id="sys-strip"></div>
         <span class="live-dot" id="live-dot" title="Live-Verbindung">LIVE</span>
         <div class="search">
-          <svg class="i"><use href="icons.svg?v=0.9.18#i-search"/></svg>
+          <svg class="i"><use href="icons.svg?v=0.9.19#i-search"/></svg>
           <input id="global-search" type="search" placeholder="Gerät suchen: Name, IP, MAC, Hersteller …" aria-label="Gerät suchen">
         </div>
       </header>
@@ -74,12 +75,13 @@
   </div>
   <div id="login-view"></div>
   <dialog id="modal"></dialog>
-  <script src="app.js?v=0.9.18"></script>
-  <script src="devices.js?v=0.9.18"></script>
-  <script src="admin.js?v=0.9.18"></script>
-  <script src="energy.js?v=0.9.18"></script>
-  <script src="integrations.js?v=0.9.18"></script>
-  <script src="sectors.js?v=0.9.18"></script>
-  <script src="setup.js?v=0.9.18"></script>
+  <script src="app.js?v=0.9.19"></script>
+  <script src="devices.js?v=0.9.19"></script>
+  <script src="admin.js?v=0.9.19"></script>
+  <script src="energy.js?v=0.9.19"></script>
+  <script src="integrations.js?v=0.9.19"></script>
+  <script src="sectors.js?v=0.9.19"></script>
+  <script src="setup.js?v=0.9.19"></script>
+  <script src="power.js?v=0.9.19"></script>
 </body>
 </html>

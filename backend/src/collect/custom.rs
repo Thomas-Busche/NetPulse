@@ -411,7 +411,7 @@ async fn fetch(state: &AppState, q: &Query, cred: &Credential, device_id: i64, t
     let action = q.mode == "action";
     match protocol(&cred.kind) {
         Some("ssh") => {
-            let result = ssh::run_command_status(ip, cred, t.ssh_host_key.as_deref(), q.target.trim()).await;
+            let result = ssh::run_action(ip, cred, t.ssh_host_key.as_deref(), q.target.trim(), None).await;
             match result {
                 Ok((code, out, host_key)) => {
                     if t.ssh_host_key.is_none() && !host_key.is_empty() {

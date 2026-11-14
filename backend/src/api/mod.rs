@@ -11,6 +11,7 @@ mod devices;
 mod energy;
 mod integrations;
 mod oidc;
+mod power;
 mod probes;
 mod public;
 mod session;
@@ -67,6 +68,15 @@ pub fn router(state: AppState) -> Router {
         .route("/devices/{id}/live", get(devices::live))
         .route("/devices/{id}/interfaces/history", get(devices::interface_history))
         .route("/devices/{id}/snmp", get(devices::snmp_explorer))
+        // Ein/Aus: Wake-on-LAN, Herunterfahren, Gruppen, Zeitpläne
+        .route("/devices/{id}/power", get(power::get_device).put(power::put_device))
+        .route("/devices/{id}/power/{action}", post(power::run_device))
+        .route("/device-groups", get(power::list_groups).post(power::create_group))
+        .route("/device-groups/{id}", axum::routing::patch(power::update_group).delete(power::delete_group))
+        .route("/device-groups/{id}/power/{action}", post(power::run_group))
+        .route("/power-schedules", get(power::list_schedules).post(power::create_schedule))
+        .route("/power-schedules/{id}", axum::routing::patch(power::update_schedule).delete(power::delete_schedule))
+        .route("/power-schedules/{id}/run", post(power::run_schedule_now))
         .route("/events", get(devices::events))
         .route("/clients", get(devices::unifi_clients))
         .route("/clients/import", post(devices::unifi_import))
