@@ -1024,12 +1024,7 @@ async function viewDevice(id) {
       extra += `<section class="card"><header><h2>${icon('temperature')}Sensoren</h2></header><ul class="list">
         ${snmp.sensors.slice(0, 30).map((x) => `<li><span class="ellipsis">${esc(x.name || x.kind)}</span><span class="meta">${esc(x.value)} ${esc((x.kind.match(/\((.*)\)/) || [])[1] || '')}</span></li>`).join('')}</ul></section>`;
     }
-    if (snmp && snmp.printer && snmp.printer.length) {
-      extra += `<section class="card"><header><h2>${icon('printer')}Verbrauchsmaterial</h2></header>
-        ${snmp.printer.map((s) => `<div class="meter-row"><span class="ellipsis">${esc(s.descr || 'Material')}</span>
-          ${s.pct != null ? `<div class="meter ${s.pct <= 10 ? 'crit' : s.pct <= 25 ? 'warn' : ''}"><span data-w="${s.pct}"></span></div>` : '<span class="muted small">Füllstand unbekannt</span>'}
-          <span class="small">${s.pct != null ? `${s.pct} %` : ''}</span></div>`).join('')}</section>`;
-    }
+    if (snmp && snmp.printer && snmp.printer.length) extra += printerCard(snmp.printer, snmp.printer_info || {});
     if (snmp && snmp.ups) {
       const u = snmp.ups;
       extra += `<section class="card"><header><h2>${icon('battery-charging')}USV</h2></header><dl class="details">
@@ -1051,6 +1046,36 @@ async function viewDevice(id) {
       ? `<div class="grid">${rows.length ? `<section class="${extra ? 'span-2' : 'span-3'}"><dl class="details">${rows.join('')}</dl></section>` : ''}
         ${extra ? `<div class="stack-v ${rows.length ? 'span-1' : 'span-3'}">${extra}</div>` : ''}</div>` : '';
     return `${top}${unifiHtml ? `<div class="stack-v${top ? ' gap-top' : ''}">${unifiHtml}</div>` : ''}` || empty('Keine Angaben', 'box');
+  }
+
+  // ----- Drucker (Printer-MIB) -----
+  const TONER_COLORS = ['black', 'cyan', 'magenta', 'yellow'];
+  const SUPPLY_KIND = { toner: 'Toner', ink: 'Tinte', drum: 'Trommel', waste: 'Resttonerbehälter', developer: 'Entwickler', fuser: 'Fixiereinheit', transfer: 'Transfereinheit', staples: 'Heftklammern' };
+  const PRINTER_STATUS = { idle: ['bereit', 'st-up'], printing: ['druckt', 'accent'], warmup: ['wärmt auf', 'warn'] };
+  function printerCard(supplies, info) {
+    const state = (s) => ({ some: 'noch vorhanden', unknown: 'Füllstand unbekannt', empty: 'leer', full: 'voll' }[s.state] || '');
+    const row = (s) => {
+      // Resttonerbehälter: hoher Füllstand ist schlecht
+      const bad = s.receptacle ? (s.pct >= 95 ? 'crit' : s.pct >= 85 ? 'warn' : '') : (s.pct <= 10 ? 'crit' : s.pct <= 25 ? 'warn' : '');
+      const color = TONER_COLORS.includes(s.color) ? ` toner-${s.color}` : '';
+      const sub = [SUPPLY_KIND[s.kind], s.receptacle ? 'Füllstand' : ''].filter(Boolean).join(' · ');
+      return `<div class="meter-row"><span><div class="ellipsis">${esc(s.descr || SUPPLY_KIND[s.kind] || 'Material')}</div>${sub ? `<div class="muted small">${esc(sub)}</div>` : ''}</span>
+        ${s.pct != null ? `<div class="meter ${bad}${color}"><span data-w="${s.pct}"></span></div>` : `<span class="muted small">${esc(state(s))}</span>`}
+        <span class="small">${s.state === 'empty' ? '<span class="badge sev-critical">leer</span>' : s.pct != null ? `${s.pct} %` : ''}</span></div>`;
+    };
+    const status = PRINTER_STATUS[info.status];
+    const badges = [status ? `<span class="badge ${status[1]}">${esc(status[0])}</span>` : '',
+      ...(info.errors || []).map((e) => `<span class="badge warn">${esc(e)}</span>`)].join(' ');
+    const trays = (info.trays || []).map((t) => `<li><span class="lead">${icon('file-text', 'i-sm')}<span class="ellipsis">${esc(t.name || 'Fach')}${t.media ? ` <span class="muted small">${esc(t.media)}</span>` : ''}</span></span>
+      <span class="meta">${t.state === 'empty' ? '<span class="badge sev-critical">leer</span>' : t.pct != null ? `${esc(t.pct)} %` : t.state === 'some' ? 'Papier vorhanden' : '–'}${t.max > 0 ? ` <span class="muted small">(max. ${esc(t.max)} Blatt)</span>` : ''}</span></li>`).join('');
+    return `<section class="card"><header><h2>${icon('printer')}Drucker</h2>${info.page_count != null ? `<span class="badge plain">${esc(Number(info.page_count).toLocaleString('de-DE'))} Seiten</span>` : ''}</header>
+      ${badges.trim() ? `<p>${badges}</p>` : ''}
+      ${(info.display || []).length ? `<p class="muted small">Anzeige: ${esc(info.display.join(' · '))}</p>` : ''}
+      <h3 class="small muted">Verbrauchsmaterial</h3>${supplies.map(row).join('')}
+      ${trays ? `<h3 class="small muted">Papierfächer</h3><ul class="list">${trays}</ul>` : ''}
+      ${(info.alerts || []).length ? `<h3 class="small muted">Meldungen des Druckers</h3><ul class="list">${info.alerts.map((a) => `<li><span class="ellipsis">${esc(a.message)}</span>
+        <span class="meta"><span class="badge ${a.severity === 'critical' ? 'sev-critical' : a.severity === 'warning' ? 'sev-warn' : 'sev-info'}">${a.severity === 'critical' ? 'kritisch' : a.severity === 'warning' ? 'Warnung' : 'Hinweis'}</span></span></li>`).join('')}</ul>` : ''}
+    </section>`;
   }
 
   // ----- Schnittstellen -----
