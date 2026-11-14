@@ -328,6 +328,50 @@ offline und doppelte sind vorausgewählt, **„Ausgewählte löschen“** entfer
 - Der **angezeigte Name** ist in dieser Reihenfolge: eigener Name → vom Gerät gemeldeter Name (SNMP, SSH, Shelly, UniFi,
   FRITZ!Box, DHCP) → DNS-Name → IP.
 
+### 7.5 Ein/Aus: Aufwecken, Herunterfahren, Gruppen und Zeitpläne
+
+Geräte lassen sich aus NetPulse **einschalten** (Wake-on-LAN) und **herunterfahren** – per Knopf am Gerät, für eine
+ganze **Gerätegruppe** oder nach **Zeitplan** (z. B. werktags 07:00 an, täglich 22:30 aus). Alles dazu steht unter
+**Ein/Aus** in der Seitenleiste; die Art je Gerät stellst du beim Gerät unter *Einstellungen → Ein/Aus* ein.
+
+**Aufwecken**
+
+| Art | Was passiert | Voraussetzung |
+|---|---|---|
+| Wake-on-LAN (Standard) | „Magic Packet“ per UDP-Broadcast (Port 9) an die Broadcast-Adresse des Netzes, an 255.255.255.255 und optional an eine eigene Adresse | MAC-Adresse bekannt (sonst von Hand eintragen), WOL im BIOS/UEFI an; bei Windows zusätzlich in den Eigenschaften der Netzwerkkarte („Wake on Magic Packet“) und den Schnellstart abschalten |
+| HTTP-Aufruf | NetPulse ruft eine Adresse auf, z. B. eine Shelly-Steckdose `http://…/relay/0?turn=on` oder einen Home-Assistant-Webhook | – |
+
+Wake-on-LAN funktioniert nur im **selben Netz** wie NetPulse. Der Container läuft dafür im Host-Netz
+(`network_mode: host`, so in `docker-compose.yml` und der Portainer-Vorlage). Mit einer Bridge-Netzwerk-Konfiguration
+kommt der Broadcast nicht im LAN an. Für ein anderes VLAN die Broadcast-Adresse dieses Netzes eintragen
+(z. B. `192.168.20.255`) und am Router gerichtete Broadcasts erlauben. Geräte in Sektoren mit Probe erreicht der Server
+per Wake-on-LAN in der Regel nicht.
+
+**Herunterfahren**
+
+| Art | Was passiert | Voraussetzung |
+|---|---|---|
+| SSH (Standard) | Linux, NAS, Raspberry Pi, Proxmox: `shutdown -h now` bzw. `poweroff` (mit 2 s Verzögerung). Windows (OpenSSH): `shutdown /s /t 5 /f` | SSH-Zugangsdaten (dem Gerät zugeordnet oder unter *Ein/Aus* gewählt). Das Konto ist root **oder** darf den Befehl per sudo ohne Passwort, z. B. Datei `/etc/sudoers.d/netpulse`: `netpulse ALL=(root) NOPASSWD: /sbin/shutdown`. Windows: Konto mit Admin-Rechten |
+| Eigener Befehl | statt des automatischen Befehls, z. B. `sudo -n /sbin/poweroff` oder `synopoweroff` | wie oben |
+| HTTP-Aufruf | z. B. Home Assistant, Steckdose aus, eigenes Skript; optional mit Benutzer/Passwort aus den Zugangsdaten (Basic-Auth) | – |
+
+Passwörter und Schlüssel liegen nur verschlüsselt im Zugangsdaten-Tresor. Eine andere Zugangsangabe für Ein/Aus
+auswählen darf nur, wer Zugangsdaten verwalten darf (sonst ginge deren Passwort an ein beliebiges Gerät). Ändert sich der
+SSH-Host-Schlüssel, bricht NetPulse ab.
+
+**Gruppen und Zeitpläne**
+
+- Eine **Gruppe** fasst Geräte zusammen (z. B. „Büro-PCs“). Ein Gerät kann in mehreren Gruppen sein. Mitglieder wählst
+  du unter *Ein/Aus → Gerätegruppen* oder beim Gerät unter *Einstellungen → Ein/Aus*. Die Knöpfe ▶ und ⏻ schalten
+  alle Geräte der Gruppe.
+- Ein **Zeitplan** hat Aktion (Aufwecken/Herunterfahren), Wochentage, Uhrzeit (Zeitzone aus `TZ`) und betrifft Gruppen
+  und/oder einzelne Geräte. Neue Gruppenmitglieder sind automatisch dabei.
+- Geräte, die schon an (bzw. aus) sind, werden übersprungen. Ein verpasster Termin – NetPulse war gerade aus – wird
+  höchstens 15 Minuten lang nachgeholt.
+- ▶ beim Zeitplan führt ihn sofort aus (zum Ausprobieren) und zeigt das Ergebnis je Gerät.
+- Jede Aktion landet unter *Ereignisse* beim Gerät und im Audit-Log; das letzte Ergebnis steht beim Zeitplan.
+- Gruppen, Zeitpläne und Ein/Aus-Einstellungen sind in der Sicherung enthalten.
+
 ---
 
 ## 8. Gerätedetails

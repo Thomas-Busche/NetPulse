@@ -9,6 +9,7 @@
                 │    TLS, CSP, HSTS          ├─ REST-API + Weboberfläche (axum)                                │
                 │                            ├─ Discovery-Task   (alle 15 min + „Jetzt scannen“)               │
                 │                            ├─ Monitor-Task     (jede Minute)                                 │
+                │                            ├─ Ein/Aus-Task     (alle 30 s: fällige Zeitpläne)                │
                 │                            └─ Wartungs-Task    (stündlich: Löschfristen, Sitzungen)          │
                 │                                      │                                                       │
                 │                                      ▼                                                       │
@@ -43,6 +44,8 @@ Raspberry Pi einfach und sparsam: etwa 10–30 MB RAM für NetPulse selbst.
 | `api_tokens`, `login_attempts`, `oidc_states` | API-Schlüssel (nur Hash), Anmeldeschutz, laufende SSO-Anmeldungen |
 | `probes` | Probes je Sektor (Schlüssel nur als Hash, Lebenszeichen, Version) |
 | `dashboard_views` | Gespeicherte und geteilte Dashboard-Ansichten |
+| `device_groups`, `device_group_members` | Gerätegruppen (ein Gerät kann in mehreren sein) |
+| `power_schedules` | Ein/Aus-Zeitpläne: Aufwecken/Herunterfahren an Wochentagen zur Uhrzeit, für Geräte und Gruppen; Einstellungen je Gerät in `devices.power` |
 
 Das Schema liegt in `backend/migrations/` und wird beim Start automatisch angewendet.
 Neue Änderungen kommen immer als **neue** Datei hinzu (`0002_…sql`); bestehende Migrationen werden nie geändert.
