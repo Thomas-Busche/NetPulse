@@ -1555,7 +1555,7 @@ function showLogin() {
       <p class="error" id="kiosk-error"></p>
       <button type="button" class="link-btn" id="kiosk-back">Zurück zur normalen Anmeldung</button>
     </form>
-    <div class="maker maker-login"><img src="buschehome.png" alt="BuscheHome-Logo" width="40" height="40"><span>ein Projekt von <b>BuscheHome</b></span></div></div>`;
+    <p class="maker maker-login"><a href="https://www.buschehome.de" target="_blank" rel="noopener noreferrer"><img src="buschehome.png" alt="BuscheHome-Logo" width="40" height="40"><span>ein Projekt von <b>BuscheHome</b></span></a><a class="maker-src" href="https://github.com/Thomas-Busche/NetPulse" target="_blank" rel="noopener noreferrer" title="Quellcode und Lizenz (AGPL-3.0) auf GitHub">Quellcode</a></p></div>`;
   const toggleKiosk = (on) => { $('#login-form').hidden = on; $('#kiosk-form').hidden = !on; };
   // Zentrale Anmeldung: Knopf nur, wenn eingerichtet; Fehler kommen per Rücksprung als #sso-error=…
   if (ssoError) $('#login-error').textContent = ssoError;
