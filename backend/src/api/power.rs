@@ -41,6 +41,9 @@ pub async fn get_device(State(st): State<AppState>, user: Need<perm::View>, Path
     .bind(id)
     .fetch_all(&st.db)
     .await?;
+    // Automatisch ausprobierte SSH-Schlüssel (greifen, wenn nichts zugeordnet ist)
+    let auto_ssh: Vec<(i64, String)> =
+        sqlx::query_as("SELECT id, name FROM credentials WHERE kind = 'ssh_key' AND auto ORDER BY id").fetch_all(&st.db).await?;
     let groups: Vec<(i64, String)> = sqlx::query_as(
         "SELECT g.id, g.name FROM device_groups g JOIN device_group_members m ON m.group_id = g.id WHERE m.device_id = $1 ORDER BY g.name",
     )
@@ -53,6 +56,7 @@ pub async fn get_device(State(st): State<AppState>, user: Need<perm::View>, Path
         "os": os,
         "wol_targets": targets.iter().map(|t| t.to_string()).collect::<Vec<_>>(),
         "ssh_credentials": ssh.into_iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>(),
+        "auto_ssh_credentials": auto_ssh.into_iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>(),
         "groups": groups.into_iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>(),
     })))
 }

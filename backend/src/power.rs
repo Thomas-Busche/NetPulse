@@ -328,16 +328,22 @@ async fn shutdown(state: &AppState, t: &Target) -> Result<String> {
 
 async fn shutdown_ssh(state: &AppState, t: &Target) -> Result<String> {
     let addr: Ipv4Addr = t.ip.parse().map_err(|_| anyhow!("Herunterfahren per SSH geht nur mit IPv4-Adresse"))?;
-    let cred = match t.power.ssh_credential_id {
-        Some(id) => load_credential(state, id).await?,
-        None => collect::load_credentials(state, t.id)
-            .await?
-            .into_iter()
-            .find(|c| c.linked && c.kind.starts_with("ssh"))
-            .ok_or_else(|| anyhow!("Keine SSH-Zugangsdaten zugeordnet – unter Einstellungen → Zugangsdaten oder Ein/Aus wählen"))?,
+    // Reihenfolge: unter Ein/Aus gewählt → dem Gerät zugeordnet → automatische SSH-Schlüssel (wie bei der Abfrage;
+    // Passwörter gehen nie automatisch an fremde Geräte). Ein automatischer Treffer wird fest zugeordnet.
+    let candidates: Vec<Credential> = match t.power.ssh_credential_id {
+        Some(id) => vec![load_credential(state, id).await?],
+        None => {
+            let all = collect::load_credentials(state, t.id).await?;
+            let linked: Vec<Credential> = all.iter().filter(|c| c.linked && c.kind.starts_with("ssh")).cloned().collect();
+            if linked.is_empty() {
+                all.into_iter().filter(|c| c.kind == "ssh_key").collect()
+            } else {
+                linked
+            }
+        }
     };
-    if !cred.kind.starts_with("ssh") {
-        bail!("„{}“ ist keine SSH-Zugangsangabe", cred.name);
+    if candidates.is_empty() {
+        bail!("Keine SSH-Zugangsdaten zugeordnet und keine automatischen SSH-Schlüssel vorhanden – unter Zugangsdaten anlegen oder unter Ein/Aus wählen");
     }
     let windows = t.os.as_deref().is_some_and(|o| o.to_lowercase().contains("windows"));
     let (command, script) = match (&t.power.shutdown_command, windows) {
@@ -345,13 +351,31 @@ async fn shutdown_ssh(state: &AppState, t: &Target) -> Result<String> {
         (None, true) => (WINDOWS_SHUTDOWN, None),
         (None, false) => ("sh -s", Some(POSIX_SHUTDOWN)),
     };
-    let (code, out, host_key) = match ssh::run_action(addr, &cred, t.ssh_host_key.as_deref(), command, script).await {
-        Ok(r) => r,
-        Err(ssh::SshError::HostKeyChanged { .. }) => {
-            bail!("SSH-Host-Schlüssel hat sich geändert – abgebrochen (in den Geräte-Einstellungen zurücksetzen, falls neu installiert)")
+    let mut errors = Vec::new();
+    let mut found = None;
+    for cred in candidates {
+        if !cred.kind.starts_with("ssh") {
+            bail!("„{}“ ist keine SSH-Zugangsangabe", cred.name);
         }
-        Err(ssh::SshError::Failed(e)) => bail!("SSH mit „{}“: {e}", cred.name),
-    };
+        match ssh::run_action(addr, &cred, t.ssh_host_key.as_deref(), command, script).await {
+            Ok(r) => {
+                found = Some((cred, r));
+                break;
+            }
+            Err(ssh::SshError::HostKeyChanged { .. }) => {
+                bail!("SSH-Host-Schlüssel hat sich geändert – abgebrochen (in den Geräte-Einstellungen zurücksetzen, falls neu installiert)")
+            }
+            Err(ssh::SshError::Failed(e)) => errors.push(format!("SSH mit „{}“: {e}", cred.name)),
+        }
+    }
+    let Some((cred, (code, out, host_key))) = found else { bail!("{}", errors.join("; ")) };
+    if !cred.linked {
+        let _ = sqlx::query("INSERT INTO device_credentials (device_id, credential_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+            .bind(t.id)
+            .bind(cred.id)
+            .execute(&state.db)
+            .await;
+    }
     if t.ssh_host_key.is_none() && !host_key.is_empty() {
         let _ = sqlx::query("UPDATE devices SET ssh_host_key = $2 WHERE id = $1 AND ssh_host_key IS NULL")
             .bind(t.id)
