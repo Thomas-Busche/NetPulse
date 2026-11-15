@@ -1042,3 +1042,11 @@ body.kiosk .ls-table { font-size: 15px; }
 .wz-tile b { font-size: 24px; color: var(--text); }
 .wz-types { display: flex; gap: 6px; flex-wrap: wrap; }
 .wz-types a { text-decoration: none; }
+
+/* Drucker: Tonerfarben im Füllstandsbalken */
+.meter.toner-black > span { background: #3b3f4a; }
+.meter.toner-cyan > span { background: #06b6d4; }
+.meter.toner-magenta > span { background: #d946ef; }
+.meter.toner-yellow > span { background: #eab308; }
+.meter.warn.toner-black > span, .meter.warn.toner-cyan > span, .meter.warn.toner-magenta > span, .meter.warn.toner-yellow > span { opacity: 0.75; }
+.meter.crit[class*="toner-"] > span { background: var(--down); opacity: 1; }

@@ -12,6 +12,7 @@ const RULE_KINDS = {
   disk_usage: { label: 'Speicher fast voll', icon: 'database', unit: '%', hint: 'Höchste Belegung eines Datenträgers (SNMP/SSH nötig).' },
   cpu_usage: { label: 'CPU-Auslastung hoch', icon: 'cpu', unit: '%', hint: 'Durchschnittliche CPU-Last (SNMP/SSH nötig).' },
   mem_usage: { label: 'RAM-Auslastung hoch', icon: 'gauge', unit: '%', hint: 'Belegter Arbeitsspeicher (SNMP/SSH nötig).' },
+  supply_low: { label: 'Toner/Tinte fast leer', icon: 'printer', unit: '%', hint: 'Drucker: Toner, Tinte oder Trommel unter X % Restfüllstand, oder der Resttonerbehälter ist fast voll (SNMP nötig, Standard-Printer-MIB). Ein Alarm je Drucker, er schließt sich nach dem Wechsel von selbst.' },
   temperature: { label: 'Temperatur hoch', icon: 'temperature', unit: '°C', hint: 'Höchste gemeldete Temperatur (SSH/Synology-SNMP).' },
   syslog_match: { label: 'Protokollmeldung (Syslog/Trap)', icon: 'file-text', unit: null, syslog: true, hint: 'Alarm bei neuen Syslog-Meldungen oder SNMP-Traps, die den Suchtext enthalten und mindestens die gewählte Stufe haben (z. B. „Failed password“, „linkDown“). Mehrere Treffer werden je Gerät zusammengefasst.' },
   check_down: { label: 'Dienst ausgefallen', icon: 'world-www', unit: null, check: true, hint: 'Webseite, Port, DNS oder Zertifikat-Check schlägt fehl (unter „Dienste“ angelegt).' },
@@ -22,7 +23,7 @@ const RULE_KINDS = {
 
 /** Regel-Arten nach Themen – damit man z. B. die Dienst-Regeln sofort findet */
 const RULE_GROUPS = [
-  ['Geräte', ['device_down', 'cpu_usage', 'mem_usage', 'disk_usage', 'temperature']],
+  ['Geräte', ['device_down', 'cpu_usage', 'mem_usage', 'disk_usage', 'temperature', 'supply_low']],
   ['Dienste (Webseiten, Ports, Zertifikate)', ['check_down', 'cert_expiry']],
   ['Protokolle', ['syslog_match']],
   ['Backups (verbundene Programme)', ['job_failed', 'job_missing']],
@@ -166,7 +167,7 @@ async function viewAlerts(_arg, params) {
       $('#kind-hint', dlg).textContent = def.hint;
       $('#f-threshold', dlg).hidden = !def.unit;
       $('#unit', dlg).textContent = def.unit ? `(${def.unit})` : '';
-      $('#f-duration', dlg).hidden = !(k === 'device_down' || k === 'check_down' || (def.unit && k !== 'cert_expiry' && !def.job));
+      $('#f-duration', dlg).hidden = !(k === 'device_down' || k === 'check_down' || (def.unit && k !== 'cert_expiry' && k !== 'supply_low' && !def.job));
       $('#f-job', dlg).hidden = !def.job;
       $('#f-check', dlg).hidden = !def.check;
       $('#f-syslog', dlg).hidden = !def.syslog;
@@ -175,7 +176,7 @@ async function viewAlerts(_arg, params) {
       $('#f-repeat', dlg).hidden = !(k === 'device_down' || k === 'check_down' || def.unit);
       $('#f-escalate', dlg).hidden = $('#f-repeat', dlg).hidden;
       $('#f-scope', dlg).hidden = !!def.job;
-      if (!rule && def.unit && !form.threshold.value) form.threshold.value = k === 'temperature' ? 70 : k === 'cert_expiry' ? 14 : k === 'job_missing' ? 26 : 90;
+      if (!rule && def.unit && !form.threshold.value) form.threshold.value = k === 'temperature' ? 70 : k === 'cert_expiry' ? 14 : k === 'job_missing' ? 26 : k === 'supply_low' ? 15 : 90;
     };
     form.kind.addEventListener('change', update);
     update();

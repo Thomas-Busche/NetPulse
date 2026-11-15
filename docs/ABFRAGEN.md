@@ -257,8 +257,21 @@ Ein eigener Anzeigename (Gerät → Einstellungen) hat immer Vorrang.
 ## Drucker
 
 Netzwerkdrucker haben SNMP meist schon aktiv (oft v1/v2c mit Community `public`). Dann reicht ein SNMP-v2c-Eintrag
-mit Community `public`, am besten fest dem Drucker zugeordnet statt „automatisch“. NetPulse zeigt dann die
-Füllstände von Toner, Tinte und Trommel an.
+mit Community `public`, am besten fest dem Drucker zugeordnet statt „automatisch“.
+
+NetPulse liest die Standard-Printer-MIB (RFC 3805), die fast alle Netzwerkdrucker kennen (HP, Brother, Canon,
+Kyocera, Epson, Lexmark, Ricoh, Xerox …). Im Reiter **System** des Druckers stehen dann:
+
+- Füllstand von Toner bzw. Tinte je Farbe, Trommel, Fixiereinheit und Resttonerbehälter
+- Papierfächer mit Papierformat und Füllstand
+- Seitenzähler, Druckerstatus (bereit, druckt, wärmt auf) und Störungen wie Papierstau, Klappe offen, kein Papier
+- Meldungen, die der Drucker selbst anzeigt, und der Text im Bedienfeld
+
+Manche Drucker melden bei Fremdkartuschen keinen genauen Wert, sondern nur „noch vorhanden“. Das wird so angezeigt.
+
+Für eine Warnung bei wenig Toner unter **Alarme → Regeln** die Regel **Toner/Tinte fast leer** anlegen
+(Voreinstellung 15 %). Sie gilt für einen Drucker oder alle, meldet einmal je Drucker und schließt sich nach dem
+Kartuschenwechsel von selbst. Die Werte werden bei jeder tiefen Abfrage aktualisiert (`INVENTORY_INTERVAL_MIN`, Standard 5 Minuten).
 
 ## USV (APC, Eaton, CyberPower …)
 

@@ -571,6 +571,7 @@ zur Nachverfolgung sichtbar.
 | | RAM-Auslastung hoch | Schwelle in %, Dauer |
 | | Speicher fast voll | Schwelle in % |
 | | Temperatur hoch | Schwelle in °C |
+| | Toner/Tinte fast leer | Restfüllstand in % (Voreinstellung 15), Drucker oder alle |
 | Dienste | Dienst ausgefallen | Dienst (oder alle) |
 | | Zertifikat läuft ab | Dienst, Tage vor Ablauf |
 | Protokolle | Protokollmeldung (Syslog/Trap) | Suchtext (leer = alle), Mindest-Stufe, Gerät |
