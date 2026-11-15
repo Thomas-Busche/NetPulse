@@ -5,6 +5,7 @@ mod alerts;
 mod backup;
 mod checks;
 mod credentials;
+mod queries;
 mod dashboard;
 mod devices;
 mod energy;
@@ -126,6 +127,13 @@ pub fn router(state: AppState) -> Router {
         .route("/credentials/{id}/test", post(credentials::test))
         .route("/credentials/{id}/scan", post(credentials::scan).get(credentials::scan_status))
         .route("/credentials/{id}/devices", get(credentials::devices).put(credentials::set_devices))
+        // Eigene Abfragen und Aktionen
+        .route("/queries", get(queries::list).post(queries::create))
+        .route("/queries/test", post(queries::test))
+        .route("/queries/{id}", axum::routing::patch(queries::update).delete(queries::remove))
+        .route("/queries/{id}/run", post(queries::run))
+        .route("/queries/{id}/history/{device_id}", get(queries::history))
+        .route("/devices/{id}/queries", get(queries::for_device))
         // Alarmierung
         .route("/channels", get(alerts::list_channels).post(alerts::create_channel))
         .route("/channels/{id}", axum::routing::patch(alerts::update_channel).delete(alerts::delete_channel))

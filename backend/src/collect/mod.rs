@@ -5,6 +5,7 @@
 //! (SNMP immer, SSH nur mit Schlüssel und nur bei offenem Port) und bei Erfolg fest zugeordnet.
 
 pub mod check;
+pub mod custom;
 pub mod fast;
 pub mod fritzbox;
 pub mod live;
@@ -17,6 +18,7 @@ pub mod snmp;
 pub mod ssh;
 pub mod tls;
 pub mod unifi;
+pub mod winrm;
 
 use std::{net::Ipv4Addr, time::Duration};
 
@@ -47,6 +49,9 @@ pub struct Secret {
     pub priv_protocol: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub priv_password: Option<String>,
+    /// Token/API-Schlüssel für `http_token`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<String>,
 }
 
 #[derive(Clone)]
@@ -58,6 +63,8 @@ pub struct Credential {
     pub port: Option<i32>,
     pub secret: Secret,
     pub linked: bool,
+    /// Nicht geheime Einstellungen (Hersteller, http/https, Token-Header …)
+    pub options: Value,
 }
 
 impl Credential {
@@ -127,6 +134,7 @@ struct CredentialRow {
     port: Option<i32>,
     secret: String,
     linked: bool,
+    options: Value,
 }
 
 #[derive(sqlx::FromRow)]
@@ -146,7 +154,7 @@ struct DeviceRow {
 
 pub(crate) async fn load_credentials(state: &AppState, device_id: i64) -> Result<Vec<Credential>> {
     let rows: Vec<CredentialRow> = sqlx::query_as(
-        "SELECT c.id, c.name, c.kind, c.username, c.port, c.secret,
+        "SELECT c.id, c.name, c.kind, c.username, c.port, c.secret, c.options,
                 EXISTS (SELECT 1 FROM device_credentials dc WHERE dc.device_id = $1 AND dc.credential_id = c.id) AS linked
            FROM credentials c
           WHERE c.auto OR c.id IN (SELECT credential_id FROM device_credentials WHERE device_id = $1)
@@ -166,6 +174,7 @@ pub(crate) async fn load_credentials(state: &AppState, device_id: i64) -> Result
                 port: row.port,
                 secret,
                 linked: row.linked,
+                options: row.options,
             }),
             Err(e) => tracing::error!("Zugangsdaten {}: {e:#}", row.id),
         }
@@ -363,6 +372,27 @@ pub async fn poll_device(state: &AppState, device_id: i64) -> Result<()> {
         }
     }
 
+    // Windows-Remoteverwaltung (WinRM): nur fest zugeordnet, gleiches Inventar wie Windows über SSH
+    for cred in credentials.iter().filter(|c| c.kind == "winrm") {
+        if !cred.linked || inventory.contains_key("ssh") {
+            continue;
+        }
+        match Box::pin(winrm::collect(addr, cred, tls_pin.as_deref())).await {
+            Ok((data, pin)) => {
+                if let (None, Some(pin)) = (&tls_pin, pin) {
+                    sqlx::query("UPDATE devices SET tls_pin = $2 WHERE id = $1 AND tls_pin IS NULL").bind(device_id).bind(pin).execute(&state.db).await?;
+                }
+                trace.add(Some(true), format!("Windows-Remoteverwaltung mit „{}“: Daten gelesen ({})", cred.name, data["os"].as_str().unwrap_or("Windows")));
+                inventory.insert("ssh".into(), data);
+                break;
+            }
+            Err(e) => {
+                trace.add(Some(false), format!("Windows-Remoteverwaltung mit „{}“: {e:#}", cred.name));
+                errors.push(format!("WinRM: {e:#}"));
+            }
+        }
+    }
+
     // UniFi-Controller: nur mit fest zugeordneten Zugangsdaten – API-Schlüssel und Passwort gehen nie an fremde Geräte
     for cred in credentials.iter().filter(|c| c.kind == "unifi") {
         if !cred.linked {
@@ -433,6 +463,19 @@ pub async fn poll_device(state: &AppState, device_id: i64) -> Result<()> {
         }
     }
 
+    // Eigene Abfragen (frei definierte SSH-Befehle, HTTP-Aufrufe, SNMP-OIDs)
+    match Box::pin(custom::run_for_device(state, device_id)).await {
+        Ok(lines) => {
+            for (ok, line) in lines {
+                if !ok {
+                    errors.push(line.clone());
+                }
+                trace.add(Some(ok), line);
+            }
+        }
+        Err(e) => trace.add(Some(false), format!("Eigene Abfragen: {e:#}")),
+    }
+
     if inventory.is_empty() {
         // Nur bei fest zugeordneten Zugangsdaten ist ein Fehlschlag eine Meldung wert;
         // dass automatische Versuche nicht passen, ist der Normalfall.
@@ -480,7 +523,11 @@ pub async fn poll_device(state: &AppState, device_id: i64) -> Result<()> {
     .bind(&wan)
     .bind(derived.reported_name)
     .bind({
-        let sources: Vec<&str> = ["snmp", "ssh", "shelly", "unifi"].into_iter().filter(|k| inventory.get(*k).is_some()).collect();
+        let sources: Vec<&str> = ["snmp", "ssh", "shelly", "unifi"]
+            .into_iter()
+            .filter(|k| inventory.get(*k).is_some())
+            .map(|k| if k == "ssh" && inventory["ssh"]["via"] == "winrm" { "winrm" } else { k })
+            .collect();
         trace.add(Some(true), format!("Gespeichert ({})", sources.join(" + ").to_uppercase()));
         trace.to_json()
     })
@@ -548,7 +595,7 @@ fn advice(open_ports: &[i32], has_linked: bool) -> String {
         tips.push("sieht nach UniFi-Controller aus → Zugangsart „UniFi-Controller“ mit API-Schlüssel zuordnen");
     }
     if has(5985) || has(5986) || has(3389) {
-        tips.push("Windows → OpenSSH-Server aktivieren oder SNMP-Dienst einrichten");
+        tips.push("Windows → Zugangsart „Windows-Remoteverwaltung (WinRM)“ zuordnen (ohne Zusatzsoftware) – oder OpenSSH-Server bzw. SNMP-Dienst einrichten");
     }
     if tips.is_empty() && (has(80) || has(443)) {
         tips.push("nur eine Weboberfläche – falls das Gerät SNMP kann, dort aktivieren und SNMP-Zugangsdaten zuordnen");

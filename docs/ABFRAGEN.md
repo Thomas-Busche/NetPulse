@@ -88,9 +88,33 @@ Schlüssel statt Passwort: Inhalt von `netpulse_key.pub` in `C:\Users\netpulse\.
 In der **Firma** lässt sich das per Gruppenrichtlinie oder Intune auf alle Rechner verteilen. Vorher bitte die Hinweise zum
 Betriebsrat in [DATENSCHUTZ.md](DATENSCHUTZ.md) beachten.
 
-> **Warum SSH und nicht WinRM?** Der Windows-eigene Fernverwaltungsdienst WinRM braucht für eine sichere Verbindung
-> NTLM- oder Kerberos-Verschlüsselung oder ein HTTPS-Zertifikat auf jedem Rechner. OpenSSH ist bei aktuellen
-> Windows-Versionen eingebaut, sicher verschlüsselt und funktioniert mit Schlüsseln. WinRM ist für eine spätere Version geplant.
+### Windows ohne Zusatzsoftware: Windows-Remoteverwaltung (WinRM)
+
+Statt OpenSSH geht auch der in Windows eingebaute Fernverwaltungsdienst WinRM. NetPulse nutzt **HTTPS (Port 5986)**
+mit der Windows-Standardanmeldung **NTLM** und liest dieselben Daten wie über SSH. Eigene PowerShell-Befehle und
+Aktionen (z. B. `Stop-Computer -Force`) richtest du unter *Eigene Abfragen* ein.
+
+Einmalig in einer **PowerShell als Administrator** (legt ein selbst signiertes Zertifikat und den HTTPS-Zugang an):
+
+```powershell
+Enable-PSRemoting -Force
+$cert = New-SelfSignedCertificate -DnsName $env:COMPUTERNAME -CertStoreLocation Cert:\LocalMachine\My
+New-Item -Path WSMan:\localhost\Listener -Transport HTTPS -Address * -CertificateThumbPrint $cert.Thumbprint -Force
+New-NetFirewallRule -DisplayName "WinRM HTTPS (NetPulse)" -Direction Inbound -Protocol TCP -LocalPort 5986 -Action Allow
+# Konto zum Lesen (kein Administrator nötig):
+Add-LocalGroupMember -Group "Remoteverwaltungsbenutzer" -Member netpulse
+```
+
+Hinweise:
+- Zum **Herunterfahren/Neustarten** braucht das Konto Administratorrechte. Bei lokalen Administratorkonten (außer dem
+  eingebauten „Administrator“) blockiert Windows den Fernzugriff, bis
+  `New-ItemProperty -Path HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System -Name LocalAccountTokenFilterPolicy -Value 1 -PropertyType DWord -Force`
+  gesetzt ist. Domänenkonten als `DOMÄNE\benutzer` eintragen.
+- NetPulse merkt sich das Zertifikat beim ersten Kontakt. Wird es erneuert, beim Gerät unter *Einstellungen* die gemerkten
+  Schlüssel zurücksetzen.
+- **HTTP (Port 5985)** geht nur mit Anmeldung „Basic“ und `AllowUnencrypted` – das Passwort läuft dann unverschlüsselt.
+  Nur im abgeschotteten LAN verwenden.
+- Im Netzwerk mit vielen Rechnern lässt sich WinRM per Gruppenrichtlinie verteilen.
 
 ## Switches, Router, Access Points
 
@@ -329,6 +353,50 @@ systemctl daemon-reload && systemctl enable --now np-shim
 **Alternative:** den Container statt mit eigener IP im normalen Bridge-Netz mit Port-Freigaben betreiben
 (dann ist er unter der NAS-IP erreichbar, z. B. `https://10.10.10.15:11443`). Bei UniFi müssen die Geräte
 dann allerdings neu auf die NAS-IP „informiert“ werden – die Brücke ist meist einfacher.
+
+## Andere Geräte, Dienste und Hersteller (eigene Abfragen)
+
+Für alles, was NetPulse nicht von selbst kennt, gibt es **allgemeine Zugangsarten** und **eigene Abfragen**:
+
+1. **Zugangsdaten → Hinzufügen**. Unter **„Gerät / Dienst (Vorlage)“** sind rund 80 Geräte und Dienste vorbereitet:
+   - **Windows:** PC, Server, Hyper-V
+   - **NAS und Server:** Synology, QNAP, Ugreen, TrueNAS, Unraid, OMV, Asustor, TerraMaster, WD, macOS, Linux
+   - **Virtualisierung:** Proxmox VE/Backup Server, ESXi, XCP-ng, Kubernetes, Portainer
+   - **Smart Home:** Home Assistant, ioBroker, openHAB, Homematic, FHEM, Loxone, Shelly
+   - **Fernwartung:** Dell iDRAC, HPE iLO, Supermicro/Lenovo-BMC
+   - **Netzwerk:** FRITZ!Box, UniFi, OPNsense, pfSense, MikroTik, OpenWrt, Cisco, Aruba, Juniper, Netgear, TP-Link,
+     Zyxel, D-Link, LANCOM, DrayTek, FortiGate, Sophos, Teltonika, AdGuard, Pi-hole
+   - **Kameras/NVR:** Hikvision, Dahua, Axis, UniFi Protect
+   - **Dienste:** Nextcloud, Grafana, Prometheus, Uptime Kuma, Plex, Jellyfin, Gitea
+   - **Drucker, USV, PDU:** APC, Eaton, NUT: Art, Port und Einstellungen werden vorbelegt, darunter
+   steht, was am Gerät einzuschalten ist. Passt keine Vorlage, eine allgemeine Art wählen: SNMP v3/v2c, SSH
+   (Schlüssel/Passwort), **Windows-Remoteverwaltung (WinRM)**, **HTTP/REST-API mit Benutzer + Passwort** oder
+   **HTTP/REST-API mit Token**. Im Feld *Hersteller / Dienst* frei
+   eintragen, worum es geht (z. B. „Ugreen“, „Home Assistant“).
+2. Die Zugangsdaten dem Gerät zuordnen (*Geräte → Testen & zuordnen*).
+3. **Eigene Abfragen und Aktionen → Hinzufügen**: Zugangsdaten wählen, Vorlage oder eigenen Befehl/Pfad/OID eintragen,
+   *Testen*, speichern.
+
+Beispiele:
+
+| Gerät/Dienst | Zugang | Abfrage |
+|---|---|---|
+| Ugreen-/Synology-NAS: RAID-Zustand | SSH | `cat /proc/mdstat \| grep -c '\[U*_' \|\| true` → Zahl, 0 = alles gut |
+| TrueNAS: Pool-Zustand | SSH | `zpool list -H -o health` → Text |
+| Home Assistant: Sensor | HTTP/Token (Header `Authorization`, Vorsatz `Bearer `, Port 8123, Protokoll HTTP im LAN) | `/api/states/sensor.xyz`, Wert aus `state` |
+| Proxmox: Version | HTTP/Token (Port 8006, Vorsatz `PVEAPIToken=`, Token `user@pam!name=geheim`) | `/api2/json/version`, Wert aus `data.version` |
+| Portainer | HTTP/Token (Header `X-API-Key`, Vorsatz leer) | `/api/endpoints`, Wert aus `0.Name` |
+| Hersteller-MIB | SNMP | OID aus dem SNMP-Explorer des Geräts |
+| Windows: freier Speicher | WinRM | `[math]::Round((Get-PSDrive C).Free / 1GB, 1)` → Zahl, Einheit GB |
+| Windows: herunterfahren | WinRM, Aktion | `Stop-Computer -Force` |
+| Server per iDRAC/iLO (Redfish) | HTTP/Basic | `/redfish/v1/Systems/System.Embedded.1`, Wert aus `PowerState`; Aktion: POST `…/Actions/ComputerSystem.Reset` mit `{"ResetType":"GracefulShutdown"}` |
+
+**Aktionen** (z. B. Herunterfahren) laufen nur auf Knopfdruck in der Geräteansicht (Reiter *Eigene Abfragen*). Für
+Linux reicht ein Benutzer mit genau diesem einen sudo-Recht:
+
+```bash
+echo 'netpulse ALL=(root) NOPASSWD: /sbin/shutdown' | sudo tee /etc/sudoers.d/netpulse-shutdown
+```
 
 ## Fehlersuche
 

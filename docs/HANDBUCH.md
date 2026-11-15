@@ -494,7 +494,10 @@ reinen Leserechten** – NetPulse führt nur lesende Abfragen aus. Einrichtung j
 | SNMP v3 (empfohlen) | dito | Benutzer, SHA-256 + AES-128 empfohlen |
 | SSH mit Schlüssel (empfohlen) | Linux, NAS, Proxmox, Pi, OpenWrt, OPNsense, Windows (OpenSSH) | Schlüssel erzeugen siehe ABFRAGEN.md |
 | SSH mit Passwort | dito | wird **nie automatisch** ausprobiert, nur an ausgewählte Geräte |
-| HTTP / Web-Anmeldung | Shelly | geht nur an Geräte, die sich als Shelly ausgewiesen haben (Gen2+ per Digest) |
+| Windows-Remoteverwaltung (WinRM) | Windows ohne Zusatzsoftware | HTTPS + NTLM (oder Basic), PowerShell; gleiche Daten wie Windows über SSH, eigene Befehle und Herunterfahren als Aktion |
+| HTTP/REST-API mit Benutzer + Passwort | **jedes Gerät, jeder Dienst** mit Weboberfläche oder REST-API | Basic oder Digest, HTTPS mit gemerktem Zertifikat; nur fest zugeordnet. Was gelesen wird, legst du unter *Eigene Abfragen* fest |
+| HTTP/REST-API mit Token / API-Schlüssel | z. B. Home Assistant, Proxmox, Portainer, NAS-APIs | Header und Vorsatz frei wählbar (Standard `Authorization: Bearer …`); nur fest zugeordnet |
+| Shelly (HTTP) | Shelly | geht nur an Geräte, die sich als Shelly ausgewiesen haben (Gen2+ per Digest) |
 | UniFi-Controller | UniFi OS Server, Dream Machine, Cloud Key | API-Schlüssel (funktioniert mit 2FA) oder lokales Konto |
 | AVM FRITZ!Box | FRITZ!Box | TR-064, Digest-Anmeldung |
 | OPNsense | OPNsense-Firewall | API-Schlüssel + Secret eines Nur-Lese-Benutzers |
@@ -503,8 +506,42 @@ reinen Leserechten** – NetPulse führt nur lesende Abfragen aus. Einrichtung j
 **Automatisch vs. zugeordnet:**
 - **„Automatisch bei allen passenden Geräten verwenden“** (SNMP v3, SSH-Schlüssel, Shelly): NetPulse probiert die
   Zugangsdaten bei passenden Geräten selbst aus und ordnet sie bei Erfolg fest zu.
-- **Fest zugeordnet** (immer bei SSH-Passwort, SNMP v2c, UniFi, FRITZ!Box, OPNsense, MikroTik): Die Zugangsdaten gehen
-  nur an die Geräte, die du auswählst.
+- **Fest zugeordnet** (immer bei SSH-Passwort, SNMP v2c, HTTP/REST-API, UniFi, FRITZ!Box, OPNsense, MikroTik): Die
+  Zugangsdaten gehen nur an die Geräte, die du auswählst.
+
+**Vorlagen:** Beim Anlegen wählt *„Gerät / Dienst (Vorlage)“* für gängige Geräte (Windows, NAS, Proxmox, Home Assistant,
+iDRAC/iLO, Drucker, USV …) Art, Port und Einstellungen vor und zeigt, was am Gerät einzuschalten ist.
+
+**Hersteller / Dienst:** Freies Feld, z. B. „Ugreen“, „TrueNAS“ oder „Home Assistant“ – nur zur Übersicht. Für Geräte,
+die NetPulse nicht von Haus aus kennt, wählst du eine der **allgemeinen Arten** (SNMP, SSH, HTTP/REST) und legst
+fest, was abgefragt wird.
+
+### Eigene Abfragen und Aktionen
+
+Unter *Zugangsdaten → Eigene Abfragen und Aktionen* legst du selbst fest, was NetPulse von einem Gerät liest – mit
+beliebigen Zugangsdaten der Arten SSH, HTTP/REST oder SNMP:
+
+| Zugang | „Befehl / Pfad / OID“ | Beispiel |
+|---|---|---|
+| SSH | Befehl, der auf dem Gerät läuft | `cat /sys/class/thermal/thermal_zone0/temp` |
+| HTTP/REST | Pfad (`/api/status`) oder URL zum selben Gerät, Methode GET/POST/…, optional Body | `/api/states/sensor.temperatur`, Wert aus `state` |
+| SNMP | OID; ohne Einzelwert wird darunter gelesen | `1.3.6.1.2.1.43.10.2.1.4.1.1` (Seitenzähler) |
+
+- **Wert übernehmen aus:** bei JSON-Antworten ein Pfad wie `data.temp` oder `items.0.name`, sonst ein Text, hinter
+  dem der Wert steht (`Temperature:`). Leer = ganze Antwort. Typ **Zahl** nimmt die erste Zahl und zeichnet einen
+  Verlauf (7 Tage) auf.
+- **Abfrage** läuft bei jeder tiefen Abfrage der zugeordneten Geräte (oder nur der ausgewählten). Das Ergebnis steht in
+  der Geräteansicht im Reiter **Eigene Abfragen**; Fehler erscheinen auch im Reiter *Diagnose*.
+- **Aktion** (z. B. Herunterfahren, Neustart, Dienst neu starten) läuft **nie automatisch** – nur über „Ausführen“ in
+  der Geräteansicht (Recht *Geräte verwalten*, frische Anmeldung) oder durch Funktionen wie einen Zeitplan. Jede
+  Ausführung steht im Audit-Log und in den Ereignissen des Geräts.
+- **Vorlagen** füllen das Formular mit gängigen Beispielen (Laufzeit, RAID-/ZFS-Zustand, Docker, Updates, Herunterfahren
+  für Linux/Windows/Synology, Home Assistant, Proxmox, Drucker-Seitenzähler).
+- **Testen** zeigt vor dem Speichern die rohe Antwort und den übernommenen Wert. Aktionen werden beim Testen nicht
+  ausgeführt.
+- Sicherheit: HTTP-Zugangsdaten gehen nur an die IP des Geräts (URLs zu anderen Adressen werden abgelehnt), bei HTTPS
+  wird das Zertifikat beim ersten Kontakt gemerkt. Für Aktionen auf dem Gerät nur das nötige Recht vergeben (z. B.
+  `sudo` nur für `/sbin/shutdown`).
 
 **Geräte zuordnen:** Beim Anlegen oder über **„Geräte“** bei den Zugangsdaten. Die Liste lässt sich durchsuchen und nach
 Typ filtern; passende Geräte sind vorausgewählt. **„Testen & zuordnen“** prüft jedes Gerät und ordnet nur zu, wo die

@@ -265,16 +265,17 @@ struct CredentialRow {
     username: Option<String>,
     port: Option<i32>,
     secret: String,
+    options: serde_json::Value,
 }
 
 async fn load_credential(state: &AppState, id: i64) -> Result<Credential> {
-    let row: Option<CredentialRow> = sqlx::query_as("SELECT id, name, kind, username, port, secret FROM credentials WHERE id = $1")
+    let row: Option<CredentialRow> = sqlx::query_as("SELECT id, name, kind, username, port, secret, options FROM credentials WHERE id = $1")
         .bind(id)
         .fetch_optional(&state.db)
         .await?;
     let row = row.ok_or_else(|| anyhow!("Gewählte Zugangsdaten gibt es nicht mehr"))?;
     let secret: Secret = state.vault.open_value(&row.secret)?;
-    Ok(Credential { id: row.id, name: row.name, kind: row.kind, username: row.username, port: row.port, secret, linked: true })
+    Ok(Credential { id: row.id, name: row.name, kind: row.kind, username: row.username, port: row.port, secret, linked: true, options: row.options })
 }
 
 #[derive(sqlx::FromRow)]
