@@ -345,9 +345,17 @@ dann allerdings neu auf die NAS-IP „informiert“ werden – die Brücke ist m
 
 Für alles, was NetPulse nicht von selbst kennt, gibt es **allgemeine Zugangsarten** und **eigene Abfragen**:
 
-1. **Zugangsdaten → Hinzufügen**. Unter **„Gerät / Dienst (Vorlage)“** sind gängige Geräte vorbereitet (Windows, Synology,
-   QNAP, TrueNAS, Ugreen, Unraid, Proxmox VE/Backup Server, ESXi, Home Assistant, ioBroker, Portainer, Dell iDRAC,
-   HPE iLO, Supermicro/Lenovo-BMC, pfSense, Drucker, USV …): Art, Port und Einstellungen werden vorbelegt, darunter
+1. **Zugangsdaten → Hinzufügen**. Unter **„Gerät / Dienst (Vorlage)“** sind rund 80 Geräte und Dienste vorbereitet:
+   - **Windows:** PC, Server, Hyper-V
+   - **NAS und Server:** Synology, QNAP, Ugreen, TrueNAS, Unraid, OMV, Asustor, TerraMaster, WD, macOS, Linux
+   - **Virtualisierung:** Proxmox VE/Backup Server, ESXi, XCP-ng, Kubernetes, Portainer
+   - **Smart Home:** Home Assistant, ioBroker, openHAB, Homematic, FHEM, Loxone, Shelly
+   - **Fernwartung:** Dell iDRAC, HPE iLO, Supermicro/Lenovo-BMC
+   - **Netzwerk:** FRITZ!Box, UniFi, OPNsense, pfSense, MikroTik, OpenWrt, Cisco, Aruba, Juniper, Netgear, TP-Link,
+     Zyxel, D-Link, LANCOM, DrayTek, FortiGate, Sophos, Teltonika, AdGuard, Pi-hole
+   - **Kameras/NVR:** Hikvision, Dahua, Axis, UniFi Protect
+   - **Dienste:** Nextcloud, Grafana, Prometheus, Uptime Kuma, Plex, Jellyfin, Gitea
+   - **Drucker, USV, PDU:** APC, Eaton, NUT: Art, Port und Einstellungen werden vorbelegt, darunter
    steht, was am Gerät einzuschalten ist. Passt keine Vorlage, eine allgemeine Art wählen: SNMP v3/v2c, SSH
    (Schlüssel/Passwort), **Windows-Remoteverwaltung (WinRM)**, **HTTP/REST-API mit Benutzer + Passwort** oder
    **HTTP/REST-API mit Token**. Im Feld *Hersteller / Dienst* frei

@@ -355,6 +355,8 @@ pub fn extract(raw: &str, rule: Option<&str>, value_type: &str) -> Result<(Strin
             Err(_) => {
                 let line = raw.lines().find(|l| l.contains(rule)).ok_or_else(|| anyhow!("„{rule}“ nicht in der Antwort gefunden"))?;
                 let after = &line[line.find(rule).unwrap_or(0) + rule.len()..];
+                // XML-Markierung wie `<model>`: nur bis zum schließenden Tag
+                let after = if rule.starts_with('<') { after.split("</").next().unwrap_or(after) } else { after };
                 after.trim().trim_start_matches([':', '=']).trim().to_string()
             }
         },
@@ -637,6 +639,9 @@ mod tests {
         assert_eq!(extract(raw, Some("Model:"), "text").unwrap().0, "DX4800");
         assert_eq!(extract(" 12345.67 89.0\n", None, "number").unwrap().1, Some(12345.67));
         assert_eq!(extract("load -3 x", None, "number").unwrap().1, Some(-3.0));
+        let xml = "<DeviceInfo>\n<model>DS-2CD2143G2</model>\n<temp>38</temp></DeviceInfo>";
+        assert_eq!(extract(xml, Some("<model>"), "text").unwrap().0, "DS-2CD2143G2");
+        assert_eq!(extract(xml, Some("<temp>"), "number").unwrap().1, Some(38.0));
     }
 
     #[test]
