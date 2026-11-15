@@ -283,7 +283,17 @@ Der **Leitstand** ist die Übersicht für Bereitschaft und Wandbildschirm:
   und offenen Alarme; ein Klick filtert die Liste.
 - **„Jetzt kaputt“:** alle Geräte offline, ausgefallene Dienste und offene Alarme, nach Schweregrad sortiert;
   quittierte Alarme sind markiert (wer, wann, Kommentar).
-- **Vollbild** und **Sektoren durchschalten** (alle 20 s der nächste Sektor) für Bildschirme in der Leitwarte.
+- **Vollbild** und **Sektoren durchschalten** (Takt einstellbar, Vorgabe 30 s) für Bildschirme in der Leitwarte.
+
+**Anpassen:** Über **Anpassen** (oben rechts) legst du fest, was der Leitstand zeigt:
+
+- Elemente **Kennzahlen**, **Ampel je Sektor** und **Jetzt kaputt** ein- oder ausblenden und mit den Pfeilen anordnen,
+- die einzelnen **Kennzahlen** (kritische Alarme, Warnungen, Geräte offline, Dienste gestört, bestätigt) ebenso,
+- **Uhr** ein/aus, **bestätigte Alarme** und **Hinweise** in „Jetzt kaputt“ ausblenden, Takt für das Durchschalten.
+
+Die Einstellung wird je Benutzer auf dem Server gespeichert (auch in der Sicherung) und gilt ebenso für
+Leitstand-Bildschirme, die mit einem API-Schlüssel dieses Kontos angemeldet sind. „Auf Standard zurücksetzen“ stellt
+den Auslieferungszustand wieder her.
 
 **Kiosk-Modus:** Unter *Mein Konto → API-Schlüssel* einen Schlüssel anlegen und am Bildschirm auf der Anmeldeseite
 **„Als Leitstand-Bildschirm anmelden“** wählen. Die Kiosk-Sitzung kann nur ansehen (auch wenn das Konto mehr dürfte)

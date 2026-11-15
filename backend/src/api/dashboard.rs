@@ -81,6 +81,46 @@ pub async fn save(
 }
 
 // ---------------------------------------------------------------------------
+// Leitstand: welche Elemente in welcher Reihenfolge (Aufbau legt die Weboberfläche fest)
+// ---------------------------------------------------------------------------
+
+/// Einstellung des Leitstands; `null`, solange der Benutzer nichts angepasst hat (dann gilt die Vorgabe der Oberfläche)
+pub async fn leitstand_load(State(st): State<AppState>, user: CurrentUser) -> ApiResult<Json<Value>> {
+    let row: Option<(Value,)> = sqlx::query_as("SELECT layout FROM leitstand_layouts WHERE user_id = $1")
+        .bind(user.id)
+        .fetch_optional(&st.db)
+        .await?;
+    Ok(Json(row.map(|r| r.0).unwrap_or(Value::Null)))
+}
+
+/// Einstellung speichern; `null` setzt auf die Vorgabe zurück. Leitstand-Bildschirme können nur ansehen.
+pub async fn leitstand_save(
+    State(st): State<AppState>,
+    user: CurrentUser,
+    Json(layout): Json<Value>,
+) -> ApiResult<Json<Value>> {
+    if user.kiosk {
+        return Err(ApiError::Forbidden);
+    }
+    if layout.is_null() {
+        sqlx::query("DELETE FROM leitstand_layouts WHERE user_id = $1").bind(user.id).execute(&st.db).await?;
+        return Ok(Json(Value::Null));
+    }
+    if !layout.is_object() || layout.to_string().len() > 8_000 {
+        return Err(ApiError::BadRequest("Ungültige Leitstand-Einstellung".into()));
+    }
+    sqlx::query(
+        "INSERT INTO leitstand_layouts (user_id, layout) VALUES ($1, $2)
+         ON CONFLICT (user_id) DO UPDATE SET layout = EXCLUDED.layout, updated_at = now()",
+    )
+    .bind(user.id)
+    .bind(&layout)
+    .execute(&st.db)
+    .await?;
+    Ok(Json(layout))
+}
+
+// ---------------------------------------------------------------------------
 // Puls: kompakte Verlaufsdaten für Mini-Diagramme (Dashboard, Geräteliste, Kopfzeile)
 // ---------------------------------------------------------------------------
 

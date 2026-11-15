@@ -90,12 +90,107 @@ function bindAck(root, after) {
 // Leitstand
 // ---------------------------------------------------------------------------
 
+/** Elemente des Leitstands (Reihenfolge = Vorgabe) */
+const LS_ELEMENTS = {
+  kpis: { title: 'Kennzahlen', hint: 'Alarme, Geräte offline, gestörte Dienste' },
+  tiles: { title: 'Ampel je Sektor', hint: 'eine Kachel je Sektor mit Zustand und Zahlen' },
+  problems: { title: 'Jetzt kaputt', hint: 'Liste der Ausfälle und offenen Alarme' },
+};
+/** Einzelne Kennzahlen im Element „Kennzahlen“ */
+const LS_KPIS = {
+  critical: 'Kritische Alarme (offen)',
+  warning: 'Warnungen (offen)',
+  down: 'Geräte offline',
+  checks: 'Dienste gestört',
+  acked: 'Bestätigt, in Arbeit',
+};
+const LS_ROTATE = [10, 20, 30, 60, 120, 300];
+
+/** Gespeicherte Einstellung mit der Vorgabe ergänzen (neue Elemente erscheinen am Ende, unbekannte fallen weg) */
+function lsNormalize(raw) {
+  const c = raw && typeof raw === 'object' ? raw : {};
+  const order = (saved, known) => [...new Set([...(Array.isArray(saved) ? saved : []).filter((k) => known.includes(k)), ...known])];
+  const hidden = (list, known) => (Array.isArray(list) ? list.filter((k) => known.includes(k)) : []);
+  return {
+    order: order(c.order, Object.keys(LS_ELEMENTS)),
+    hidden: hidden(c.hidden, Object.keys(LS_ELEMENTS)),
+    kpi_order: order(c.kpi_order, Object.keys(LS_KPIS)),
+    kpi_hidden: hidden(c.kpi_hidden, Object.keys(LS_KPIS)),
+    clock: c.clock !== false,
+    hide_acked: c.hide_acked === true,
+    hide_info: c.hide_info === true,
+    rotate_secs: LS_ROTATE.includes(Number(c.rotate_secs)) ? Number(c.rotate_secs) : 30,
+  };
+}
+
+/** Dialog „Leitstand anpassen“: liefert die neue Einstellung, `null` für „zurücksetzen“ oder `undefined` bei Abbruch */
+function leitstandDialog(cfg) {
+  const rows = (name, keys, labels, hiddenList) => keys.map((k) => {
+    const def = labels[k];
+    const title = typeof def === 'string' ? def : def.title;
+    const hint = typeof def === 'string' ? '' : def.hint;
+    return `<li data-key="${esc(k)}">
+      <label class="inline"><input type="checkbox" name="${name}" value="${esc(k)}"${hiddenList.includes(k) ? '' : ' checked'}>
+        <span><b>${esc(title)}</b>${hint ? `<span class="muted small"> – ${esc(hint)}</span>` : ''}</span></label>
+      <span class="ls-cfg-move">
+        <button type="button" class="ghost sm" data-up title="Nach oben">${icon('arrow-up', 'i-sm')}</button>
+        <button type="button" class="ghost sm" data-down title="Nach unten">${icon('arrow-down', 'i-sm')}</button></span></li>`;
+  }).join('');
+  return new Promise((resolve) => {
+    let result;
+    const dlg = openModal('Leitstand anpassen', `<form class="form" id="ls-cfg">
+      <p class="muted small">Haken = wird angezeigt. Mit den Pfeilen änderst du die Reihenfolge. Die Einstellung gilt für dein Konto –
+        auch auf Leitstand-Bildschirmen, die mit einem API-Schlüssel dieses Kontos angemeldet sind.</p>
+      <fieldset><legend>Elemente</legend><ul class="ls-cfg-list" id="ls-cfg-el">${rows('el', cfg.order, LS_ELEMENTS, cfg.hidden)}</ul></fieldset>
+      <fieldset><legend>Kennzahlen</legend><ul class="ls-cfg-list" id="ls-cfg-kpi">${rows('kpi', cfg.kpi_order, LS_KPIS, cfg.kpi_hidden)}</ul></fieldset>
+      <fieldset><legend>Weitere Einstellungen</legend>
+        <label class="inline"><input type="checkbox" name="clock"${cfg.clock ? ' checked' : ''}> Uhr anzeigen</label>
+        <label class="inline"><input type="checkbox" name="hide_acked"${cfg.hide_acked ? ' checked' : ''}> Bestätigte Alarme in „Jetzt kaputt“ ausblenden</label>
+        <label class="inline"><input type="checkbox" name="hide_info"${cfg.hide_info ? ' checked' : ''}> Hinweise (Schwere „Hinweis“) in „Jetzt kaputt“ ausblenden</label>
+        <label>Sektoren durchschalten alle<select name="rotate_secs">${LS_ROTATE.map((n) =>
+          `<option value="${n}"${n === cfg.rotate_secs ? ' selected' : ''}>${n < 60 ? `${n} Sekunden` : `${n / 60} Minute${n > 60 ? 'n' : ''}`}</option>`).join('')}</select></label>
+      </fieldset>
+      <div class="actions"><button type="submit">${icon('check')}Speichern</button>
+        <button type="button" class="ghost" id="ls-cfg-reset">${icon('refresh')}Auf Standard zurücksetzen</button></div></form>`);
+    $$('.ls-cfg-list', dlg).forEach((list) => list.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button');
+      if (!btn) return;
+      const li = btn.closest('li');
+      if (btn.hasAttribute('data-up') && li.previousElementSibling) list.insertBefore(li, li.previousElementSibling);
+      if (btn.hasAttribute('data-down') && li.nextElementSibling) list.insertBefore(li.nextElementSibling, li);
+      btn.focus();
+    }));
+    const collect = (sel, name) => {
+      const items = $$(`${sel} li`, dlg);
+      return {
+        order: items.map((li) => li.dataset.key),
+        hidden: items.filter((li) => !$(`input[name="${name}"]`, li).checked).map((li) => li.dataset.key),
+      };
+    };
+    $('#ls-cfg', dlg).addEventListener('submit', (ev) => {
+      ev.preventDefault();
+      const f = ev.target;
+      const el = collect('#ls-cfg-el', 'el');
+      const kpi = collect('#ls-cfg-kpi', 'kpi');
+      result = {
+        order: el.order, hidden: el.hidden, kpi_order: kpi.order, kpi_hidden: kpi.hidden,
+        clock: f.clock.checked, hide_acked: f.hide_acked.checked, hide_info: f.hide_info.checked, rotate_secs: Number(f.rotate_secs.value),
+      };
+      dlg.close();
+    });
+    $('#ls-cfg-reset', dlg).addEventListener('click', () => { result = null; dlg.close(); });
+    dlg.addEventListener('close', () => resolve(result), { once: true });
+  });
+}
+
 async function viewLeitstand(_arg, params) {
   await loadSites();
   const nav = state.nav;
   let site = params.get('site') ? Number(params.get('site')) : null;
   let rotate = Number(params.get('rotate') || 0);
   let rotateTimer = null;
+  let cfg = lsNormalize(await api('/leitstand/layout').catch(() => null));
+  if (nav !== state.nav) return;
 
   view().innerHTML = `<div class="ls">
     <div class="page-head ls-head">
@@ -105,14 +200,27 @@ async function viewLeitstand(_arg, params) {
       </div>
       <div class="actions">
         <span class="ls-clock" id="ls-clock"></span>
+        ${state.user.kiosk ? '' : `<button type="button" class="ghost sm" id="ls-config" title="Elemente ein-/ausblenden und anordnen">${icon('layout-grid', 'i-sm')}Anpassen</button>`}
         <button type="button" class="ghost sm" id="ls-full" title="Vollbild">${icon('maximize', 'i-sm')}Vollbild</button>
       </div>
     </div>
-    <div id="ls-kpis"></div>
-    <div class="ls-tiles" id="ls-tiles"></div>
-    <section class="card"><header><h2>${icon('alert-triangle')}Jetzt kaputt</h2><span class="muted small" id="ls-count"></span></header>
-      <div id="ls-problems"><div class="empty">Lade …</div></div></section>
+    <div id="ls-body"></div>
   </div>`;
+
+  /** Gerüst der Elemente in der eingestellten Reihenfolge (Inhalt füllt render()) */
+  const layoutBody = () => {
+    const parts = {
+      kpis: '<div id="ls-kpis"></div>',
+      tiles: '<div class="ls-tiles" id="ls-tiles"></div>',
+      problems: `<section class="card ls-problems"><header><h2>${icon('alert-triangle')}Jetzt kaputt</h2><span class="muted small" id="ls-count"></span></header>
+        <div id="ls-problems"><div class="empty">Lade …</div></div></section>`,
+    };
+    const shown = cfg.order.filter((k) => !cfg.hidden.includes(k));
+    $('#ls-body').innerHTML = shown.map((k) => parts[k]).join('')
+      || empty('Alle Elemente sind ausgeblendet – über „Anpassen“ wieder einblenden.', 'layout-grid');
+    $('#ls-clock').hidden = !cfg.clock;
+  };
+  layoutBody();
 
   const setHash = () => {
     const q = new URLSearchParams();
@@ -123,7 +231,7 @@ async function viewLeitstand(_arg, params) {
 
   const render = async () => {
     const q = site ? `?site=${site}` : '';
-    const [status, problems] = await Promise.all([api(`/sites/status${q}`), api(`/problems${q}`)]);
+    let [status, problems] = await Promise.all([api(`/sites/status${q}`), api(`/problems${q}`)]);
     if (nav !== state.nav) return;
     const all = status.sites;
     // Kacheln: bei Auswahl eines Sektors dessen direkte Unter-Sektoren (oder er selbst), sonst die obersten Sektoren
@@ -134,14 +242,20 @@ async function viewLeitstand(_arg, params) {
     const critical = total(['alerts', 'critical']);
     const warning = total(['alerts', 'warning']);
     const kpi = (cls, value, label, ic) => `<div class="kpi ${cls}"><span class="kpi-icon">${icon(ic)}</span><div><div class="kpi-value">${esc(value)}</div><div class="kpi-label">${esc(label)}</div></div></div>`;
-    $('#ls-kpis').innerHTML = `<div class="kpis ls-kpis">
-      ${kpi(critical ? 'k-down' : 'k-up', critical, 'kritische Alarme (offen)', 'alert-triangle')}
-      ${kpi(warning ? 'k-warn' : 'k-up', warning, 'Warnungen (offen)', 'bell')}
-      ${kpi(total(['down']) ? 'k-down' : 'k-up', `${total(['down'])} / ${total(['monitored'])}`, 'Geräte offline', 'devices')}
-      ${kpi(total(['checks', 'down']) ? 'k-down' : 'k-up', `${total(['checks', 'down'])} / ${total(['checks', 'total'])}`, 'Dienste gestört', 'world-www')}
-      ${kpi('k-info', total(['alerts', 'acknowledged']), 'bestätigt, in Arbeit', 'user-check')}
-    </div>`;
-    $('#ls-tiles').innerHTML = tiles.length ? tiles.map((s) => {
+    const kpis = {
+      critical: () => kpi(critical ? 'k-down' : 'k-up', critical, 'kritische Alarme (offen)', 'alert-triangle'),
+      warning: () => kpi(warning ? 'k-warn' : 'k-up', warning, 'Warnungen (offen)', 'bell'),
+      down: () => kpi(total(['down']) ? 'k-down' : 'k-up', `${total(['down'])} / ${total(['monitored'])}`, 'Geräte offline', 'devices'),
+      checks: () => kpi(total(['checks', 'down']) ? 'k-down' : 'k-up', `${total(['checks', 'down'])} / ${total(['checks', 'total'])}`, 'Dienste gestört', 'world-www'),
+      acked: () => kpi('k-info', total(['alerts', 'acknowledged']), 'bestätigt, in Arbeit', 'user-check'),
+    };
+    const kpiBox = $('#ls-kpis');
+    if (kpiBox) {
+      const shownKpis = cfg.kpi_order.filter((k) => !cfg.kpi_hidden.includes(k));
+      kpiBox.innerHTML = shownKpis.length ? `<div class="kpis ls-kpis">${shownKpis.map((k) => kpis[k]()).join('')}</div>` : '';
+    }
+    const tileBox = $('#ls-tiles');
+    if (tileBox) tileBox.innerHTML = tiles.length ? tiles.map((s) => {
       const r = s.rollup;
       const own = s.own || {};
       const probe = own.probe ? `<span class="chip">${icon('antenna-bars-5', 'i-sm')}Probe ${own.probe.online ? 'online' : 'offline'}</span>` : '';
@@ -165,8 +279,13 @@ async function viewLeitstand(_arg, params) {
       setHash();
       render().catch(() => {});
     }));
-    $('#ls-count').textContent = problems.length ? `${problems.length} Einträge` : '';
-    $('#ls-problems').innerHTML = problems.length ? `<div class="table-wrap"><table class="ls-table">
+    const problemBox = $('#ls-problems');
+    if (!problemBox) return;
+    const allProblems = problems;
+    problems = problems.filter((p) => !(cfg.hide_acked && p.acknowledged_at) && !(cfg.hide_info && p.severity === 'info'));
+    const skipped = allProblems.length - problems.length;
+    $('#ls-count').textContent = `${problems.length ? `${problems.length} ${problems.length === 1 ? 'Eintrag' : 'Einträge'}` : ''}${skipped ? `${problems.length ? ' · ' : ''}${skipped} ausgeblendet` : ''}`;
+    problemBox.innerHTML = problems.length ? `<div class="table-wrap"><table class="ls-table">
       <thead><tr><th>Schwere</th><th>Sektor</th><th>Was</th><th>Seit</th><th>Bearbeitung</th></tr></thead>
       <tbody>${problems.map((p) => `<tr class="${p.acknowledged_at ? 'acked' : `sev-${esc(p.severity)}`}">
         <td><span class="badge ${p.severity === 'critical' ? 'sev-critical' : p.severity === 'info' ? 'info' : 'warn'}">${esc(SEV_LABEL[p.severity] || p.severity)}</span></td>
@@ -176,7 +295,7 @@ async function viewLeitstand(_arg, params) {
         <td class="small" title="${esc(fmtTime(p.since))}">${esc(fmtSince(p.since))}</td>
         <td>${p.kind === 'alert' && !state.user.kiosk ? ackCell({ ...p, resolved_at: null }) : p.acknowledged_at ? `<span class="badge info">${esc(p.acknowledged_by || 'bestätigt')}</span>` : ''}</td>
       </tr>`).join('')}</tbody></table></div>` : empty('Alles in Ordnung – nichts kaputt.', 'circle-check');
-    bindAck($('#ls-problems'), render);
+    bindAck(problemBox, render);
   };
 
   const tick = () => { const c = $('#ls-clock'); if (c) c.textContent = new Date().toLocaleString('de-DE', { weekday: 'short', hour: '2-digit', minute: '2-digit', second: '2-digit' }); };
@@ -197,7 +316,17 @@ async function viewLeitstand(_arg, params) {
   };
 
   $('#ls-site').addEventListener('change', (ev) => { site = ev.target.value ? Number(ev.target.value) : null; setHash(); render().catch(() => {}); });
-  $('#ls-rotate').addEventListener('change', (ev) => { rotate = ev.target.checked ? 30 : 0; setHash(); startRotation(); });
+  $('#ls-rotate').addEventListener('change', (ev) => { rotate = ev.target.checked ? cfg.rotate_secs : 0; setHash(); startRotation(); });
+  $('#ls-config')?.addEventListener('click', async () => {
+    const next = await leitstandDialog(cfg);
+    if (next === undefined) return;
+    await attempt(async () => {
+      cfg = lsNormalize(await api('/leitstand/layout', { method: 'PUT', body: next }));
+      if (rotate) { rotate = cfg.rotate_secs; setHash(); startRotation(); }
+      layoutBody();
+      await render();
+    }, next === null ? 'Leitstand auf Standard zurückgesetzt' : 'Leitstand gespeichert');
+  });
   $('#ls-full').addEventListener('click', () => {
     if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
     else document.documentElement.requestFullscreen().catch(() => toast('Vollbild wird von diesem Browser nicht unterstützt', true));
