@@ -95,6 +95,7 @@ async fn evaluate(state: &AppState, cursor: i64) -> Result<i64> {
             "cert_expiry" => cert_expiry(state, rule).await,
             "syslog_match" => syslog_match(state, rule).await,
             "job_missing" => job_missing(state, rule).await,
+            "supply_low" => supply_low(state, rule).await,
             _ => Ok(()),
         };
         if let Err(e) = result {
@@ -313,6 +314,58 @@ async fn threshold(state: &AppState, rule: &Rule) -> Result<()> {
                 )
                 .device(device_id)
                 .var("wert", format!("{latest:.0} {unit}"));
+                dispatch(state, rule, n).await;
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Drucker: Toner, Tinte oder Trommel unter dem Schwellwert (Prozent), Resttonerbehälter fast voll.
+/// Grundlage ist die letzte SNMP-Abfrage des Geräts.
+async fn supply_low(state: &AppState, rule: &Rule) -> Result<()> {
+    let limit = f64::from(rule.threshold.unwrap_or(15.0));
+    let rows: Vec<(i64, String, Value)> = sqlx::query_as(&format!(
+        "SELECT d.id, COALESCE(d.name, d.hostname, host(d.ip)) || ' (' || host(d.ip) || ')', d.inventory->'snmp'->'printer'
+           FROM devices d
+          WHERE jsonb_typeof(d.inventory->'snmp'->'printer') = 'array'
+            AND ($1::bigint IS NULL OR d.id = $1) AND {scope}",
+        scope = scope_sql(2, 3)
+    ))
+    .bind(rule.device_id)
+    .bind(&rule.sites)
+    .bind(&rule.tag)
+    .fetch_all(&state.db)
+    .await?;
+
+    for (device_id, label, supplies) in rows {
+        let supplies = supplies.as_array().map(Vec::as_slice).unwrap_or_default();
+        let (low, lowest) = crate::collect::printer::low_supplies(supplies, limit);
+        if !low.is_empty() {
+            let list = low.join(", ");
+            let message = format!("Verbrauchsmaterial von {label} fast leer: {list}");
+            if open_alert(state, rule, Some(device_id), &message, lowest.map(|v| v as f32)).await? {
+                let n = Notification::new(format!("Toner/Tinte fast leer: {label}"), message, Severity::Warning, device_link(state, device_id))
+                    .device(device_id)
+                    .var("wert", list);
+                dispatch(state, rule, n).await;
+            }
+        } else {
+            let closed: Option<(i64,)> = sqlx::query_as(
+                "UPDATE alerts SET resolved_at = now() WHERE rule_id = $1 AND device_id = $2 AND resolved_at IS NULL RETURNING id",
+            )
+            .bind(rule.id)
+            .bind(device_id)
+            .fetch_optional(&state.db)
+            .await?;
+            if closed.is_some() && rule.notify_recovery {
+                let n = Notification::new(
+                    format!("Verbrauchsmaterial wieder in Ordnung: {label}"),
+                    format!("Toner/Tinte von {label} wurde ersetzt oder liegt wieder über {limit:.0} %"),
+                    Severity::Resolved,
+                    device_link(state, device_id),
+                )
+                .device(device_id);
                 dispatch(state, rule, n).await;
             }
         }

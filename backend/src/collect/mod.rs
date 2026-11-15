@@ -12,6 +12,7 @@ pub mod live;
 pub mod mikrotik;
 pub mod netclients;
 pub mod opnsense;
+pub mod printer;
 pub mod shelly;
 pub mod snmp;
 pub mod ssh;

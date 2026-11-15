@@ -1047,3 +1047,11 @@ body.kiosk .ls-table { font-size: 15px; }
 .form-row > label.narrow { flex: 0 0 9rem; }
 pre.pre-wrap { white-space: pre-wrap; word-break: break-word; max-height: 18rem; overflow: auto; background: var(--surface-2); padding: 8px 10px; border-radius: 8px; }
 .cq-value { font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* Drucker: Tonerfarben im Füllstandsbalken */
+.meter.toner-black > span { background: #3b3f4a; }
+.meter.toner-cyan > span { background: #06b6d4; }
+.meter.toner-magenta > span { background: #d946ef; }
+.meter.toner-yellow > span { background: #eab308; }
+.meter.warn.toner-black > span, .meter.warn.toner-cyan > span, .meter.warn.toner-magenta > span, .meter.warn.toner-yellow > span { opacity: 0.75; }
+.meter.crit[class*="toner-"] > span { background: var(--down); opacity: 1; }

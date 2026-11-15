@@ -20,7 +20,7 @@ use crate::{
 const CHANNEL_KINDS: &[&str] = &["email", "ntfy", "gotify", "telegram", "discord", "teams", "webhook", "app"];
 const RULE_KINDS: &[&str] = &[
     "device_down", "new_device", "mac_changed", "disk_usage", "cpu_usage", "mem_usage", "temperature", "check_down", "cert_expiry",
-    "syslog_match", "job_failed", "job_missing",
+    "syslog_match", "job_failed", "job_missing", "supply_low",
 ];
 const MASK: &str = "••••••";
 
@@ -349,7 +349,7 @@ pub async fn create_rule(
     if !RULE_KINDS.contains(&kind) {
         return Err(ApiError::BadRequest("Unbekannter Regeltyp".into()));
     }
-    let needs_threshold = matches!(kind, "disk_usage" | "cpu_usage" | "mem_usage" | "temperature" | "cert_expiry" | "job_missing");
+    let needs_threshold = matches!(kind, "disk_usage" | "cpu_usage" | "mem_usage" | "temperature" | "cert_expiry" | "job_missing" | "supply_low");
     if needs_threshold && req.threshold.is_none() {
         return Err(ApiError::BadRequest("Bitte einen Schwellwert angeben".into()));
     }

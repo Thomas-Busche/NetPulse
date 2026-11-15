@@ -2,7 +2,7 @@
 //!
 //! Gelesen werden nur Standard-MIBs, die fast jedes Gerät kennt:
 //! SNMPv2-MIB (System), IF-MIB (Schnittstellen), HOST-RESOURCES-MIB (CPU, RAM, Speicher),
-//! Printer-MIB (Toner), UPS-MIB (Akku), ENTITY-MIB (Modell, Seriennummer), LLDP-MIB (Nachbarn)
+//! Printer-MIB (Toner, Papierfächer, Seitenzähler), UPS-MIB (Akku), ENTITY-MIB (Modell, Seriennummer), LLDP-MIB (Nachbarn)
 //! sowie die Synology-MIB (Modell, Temperatur).
 
 use std::{
@@ -241,7 +241,6 @@ pub(crate) const IF_TABLE: &[u64] = &[1, 3, 6, 1, 2, 1, 2, 2, 1];
 pub(crate) const IFX_TABLE: &[u64] = &[1, 3, 6, 1, 2, 1, 31, 1, 1, 1];
 const HR_STORAGE: &[u64] = &[1, 3, 6, 1, 2, 1, 25, 2, 3, 1];
 const HR_PROCESSOR_LOAD: &[u64] = &[1, 3, 6, 1, 2, 1, 25, 3, 3, 1, 2];
-const PRINTER_SUPPLIES: &[u64] = &[1, 3, 6, 1, 2, 1, 43, 11, 1, 1];
 const UPS_MIB: &[u64] = &[1, 3, 6, 1, 2, 1, 33, 1];
 const ENTITY_PHYSICAL: &[u64] = &[1, 3, 6, 1, 2, 1, 47, 1, 1, 1, 1];
 const LLDP_REM_SYSNAME: &[u64] = &[1, 0, 8802, 1, 1, 2, 1, 4, 1, 1, 9];
@@ -347,24 +346,10 @@ pub async fn collect(ip: Ipv4Addr, cred: &Credential) -> Result<Value> {
         data.insert("cpu_cores".into(), json!(loads.len()));
     }
 
-    // Drucker: Füllstände (Toner, Tinte, Trommel …)
-    let supply_descr = column(&mut s, &with(PRINTER_SUPPLIES, &[6]), 64).await;
-    if !supply_descr.is_empty() {
-        let max = column(&mut s, &with(PRINTER_SUPPLIES, &[8]), 64).await;
-        let level = column(&mut s, &with(PRINTER_SUPPLIES, &[9]), 64).await;
-        let supplies: Vec<Value> = supply_descr
-            .iter()
-            .map(|(idx, d)| {
-                let max = max.get(idx).and_then(Val::num);
-                let level = level.get(idx).and_then(Val::num);
-                let pct = match (level, max) {
-                    (Some(l), Some(m)) if l >= 0.0 && m > 0.0 => Some((l / m * 100.0).round()),
-                    _ => None,
-                };
-                json!({ "descr": d.text(), "level": level, "max": max, "pct": pct })
-            })
-            .collect();
+    // Drucker: Füllstände (Toner, Tinte, Trommel …), Papierfächer, Seitenzähler, Status
+    if let Some((supplies, info)) = super::printer::collect(&mut s).await {
         data.insert("printer".into(), Value::Array(supplies));
+        data.insert("printer_info".into(), info);
     }
 
     // USV (UPS-MIB)
