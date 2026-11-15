@@ -305,6 +305,8 @@ impl Session {
                     }
                     bail!("Anmeldung abgelehnt – Benutzer/Passwort prüfen (Domänenkonto als DOMÄNE\\benutzer); Konto braucht Zugriff auf WinRM (Gruppe „Remoteverwaltungsbenutzer“ oder Administratoren)");
                 }
+                // Receive: „noch keine neue Ausgabe innerhalb von OperationTimeout“ – kein echter Fehler
+                _ if text.contains("2150858793") => bail!("WinRM: noch keine Ausgabe (2150858793)"),
                 s => bail!("WinRM antwortete mit {s}: {}", fault(&text)),
             }
         }

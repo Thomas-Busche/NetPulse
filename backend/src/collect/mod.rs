@@ -522,7 +522,11 @@ pub async fn poll_device(state: &AppState, device_id: i64) -> Result<()> {
     .bind(&wan)
     .bind(derived.reported_name)
     .bind({
-        let sources: Vec<&str> = ["snmp", "ssh", "shelly", "unifi"].into_iter().filter(|k| inventory.get(*k).is_some()).collect();
+        let sources: Vec<&str> = ["snmp", "ssh", "shelly", "unifi"]
+            .into_iter()
+            .filter(|k| inventory.get(*k).is_some())
+            .map(|k| if k == "ssh" && inventory["ssh"]["via"] == "winrm" { "winrm" } else { k })
+            .collect();
         trace.add(Some(true), format!("Gespeichert ({})", sources.join(" + ").to_uppercase()));
         trace.to_json()
     })

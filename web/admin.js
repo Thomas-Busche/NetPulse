@@ -725,7 +725,9 @@ function credDialog(cred, opts = {}) {
     form.elements.header.value = po.header || '';
     form.elements.prefix.value = po.prefix != null ? po.prefix : '';
     form.elements.username.placeholder = preset.user || '';
-    if (!form.elements.name.value) form.elements.name.value = preset.label.replace(/ \(.*\)$/, '');
+    const auto = preset.label.replace(/ \(.*\)$/, '');
+    if (!form.elements.name.value || form.elements.name.value === form.dataset.presetName) form.elements.name.value = auto;
+    form.dataset.presetName = auto;
     update();
   });
   update();
@@ -778,7 +780,7 @@ const QUERY_TEMPLATES = [
   { proto: 'http', name: 'Proxmox: Version', target: '/api2/json/version', extract: 'data.version', value_type: 'text', hint: 'Token-Zugang, Port 8006, Vorsatz „PVEAPIToken=“' },
   { proto: 'http', name: 'JSON-Feld lesen', target: '/api/status', extract: 'status', value_type: 'text', hint: 'beliebige REST-API' },
   { proto: 'winrm', name: 'Laufzeit (Tage)', target: '[math]::Round(((Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime).TotalDays, 2)', value_type: 'number', unit: 'Tage', hint: 'Windows' },
-  { proto: 'winrm', name: 'Freier Speicher C:', target: '[math]::Round((Get-PSDrive C).Free / 1GB, 1)', value_type: 'number', unit: 'GB', hint: 'Windows' },
+  { proto: 'winrm', name: 'Freier Speicher Laufwerk C', target: '[math]::Round((Get-PSDrive C).Free / 1GB, 1)', value_type: 'number', unit: 'GB', hint: 'Windows' },
   { proto: 'winrm', name: 'Dienst läuft? (1 = ja)', target: "[int]((Get-Service -Name 'Spooler').Status -eq 'Running')", value_type: 'number', hint: 'Dienstnamen anpassen' },
   { proto: 'winrm', name: 'Angemeldete Benutzer', target: '(Get-CimInstance Win32_ComputerSystem).UserName', value_type: 'text', hint: 'Windows' },
   { proto: 'winrm', name: 'Neustart ausstehend (1 = ja)', target: "[int](Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired')", value_type: 'number', hint: 'nach Windows-Updates' },
