@@ -338,6 +338,51 @@ offline und doppelte sind vorausgewählt, **„Ausgewählte löschen“** entfer
 - Der **angezeigte Name** ist in dieser Reihenfolge: eigener Name → vom Gerät gemeldeter Name (SNMP, SSH, Shelly, UniFi,
   FRITZ!Box, DHCP) → DNS-Name → IP.
 
+### 7.5 Ein/Aus: Aufwecken, Herunterfahren, Gruppen und Zeitpläne
+
+Geräte lassen sich aus NetPulse **einschalten** (Wake-on-LAN) und **herunterfahren** – per Knopf am Gerät, für eine
+ganze **Gerätegruppe** oder nach **Zeitplan** (z. B. werktags 07:00 an, täglich 22:30 aus). Alles dazu steht unter
+**Ein/Aus** in der Seitenleiste; die Art je Gerät stellst du beim Gerät unter *Einstellungen → Ein/Aus* ein.
+
+**Aufwecken**
+
+| Art | Was passiert | Voraussetzung |
+|---|---|---|
+| Wake-on-LAN (Standard) | „Magic Packet“ per UDP-Broadcast (Port 9) an die Broadcast-Adresse des Netzes, an 255.255.255.255 und optional an eine eigene Adresse | MAC-Adresse bekannt (sonst von Hand eintragen), WOL im BIOS/UEFI an; bei Windows zusätzlich in den Eigenschaften der Netzwerkkarte („Wake on Magic Packet“) und den Schnellstart abschalten |
+| HTTP-Aufruf | NetPulse ruft eine Adresse auf, z. B. eine Shelly-Steckdose `http://…/relay/0?turn=on` oder einen Home-Assistant-Webhook | – |
+
+Wake-on-LAN funktioniert nur im **selben Netz** wie NetPulse. Der Container läuft dafür im Host-Netz
+(`network_mode: host`, so in `docker-compose.yml` und der Portainer-Vorlage). Mit einer Bridge-Netzwerk-Konfiguration
+kommt der Broadcast nicht im LAN an. Für ein anderes VLAN die Broadcast-Adresse dieses Netzes eintragen
+(z. B. `192.168.20.255`) und am Router gerichtete Broadcasts erlauben. Geräte in Sektoren mit Probe erreicht der Server
+per Wake-on-LAN in der Regel nicht.
+
+**Herunterfahren**
+
+| Art | Was passiert | Voraussetzung |
+|---|---|---|
+| SSH (Standard) | Linux, NAS, Raspberry Pi, Proxmox: `shutdown -h now` bzw. `poweroff` (mit 2 s Verzögerung). Windows (OpenSSH): `shutdown /s /t 5 /f` | SSH-Zugangsdaten: unter *Ein/Aus* gewählt, sonst die dem Gerät zugeordneten, sonst werden SSH-Schlüssel mit „automatisch ausprobieren“ getestet (ein Treffer wird fest zugeordnet). Passwörter gehen nie automatisch an ein Gerät. Das Konto ist root **oder** darf den Befehl per sudo ohne Passwort, z. B. Datei `/etc/sudoers.d/netpulse`: `netpulse ALL=(root) NOPASSWD: /sbin/shutdown`. Windows: Konto mit Admin-Rechten |
+| Eigener Befehl | statt des automatischen Befehls, z. B. `sudo -n /sbin/poweroff` oder `synopoweroff` | wie oben |
+| HTTP-Aufruf | z. B. Home Assistant, Steckdose aus, eigenes Skript; optional mit Benutzer/Passwort aus den Zugangsdaten (Basic-Auth) | – |
+
+Passwörter und Schlüssel liegen nur verschlüsselt im Zugangsdaten-Tresor. Eine andere Zugangsangabe für Ein/Aus
+auswählen darf nur, wer Zugangsdaten verwalten darf (sonst ginge deren Passwort an ein beliebiges Gerät). Ändert sich der
+SSH-Host-Schlüssel, bricht NetPulse ab.
+
+**Gruppen und Zeitpläne**
+
+- Eine **Gruppe** fasst Geräte zusammen (z. B. „Büro-PCs“). Ein Gerät kann in mehreren Gruppen sein. Mitglieder wählst
+  du unter *Ein/Aus → Gerätegruppen* oder beim Gerät unter *Einstellungen → Ein/Aus*. Die Knöpfe ▶ und ⏻ schalten
+  alle Geräte der Gruppe.
+- Bekannte Werte sind schon eingetragen: die erkannte MAC-Adresse (folgt automatisch einer neuen MAC, solange du sie nicht änderst) und Port 9. Gibt es nur einen SSH-Zugang, ist er vorgeschlagen.
+- Ein **Zeitplan** hat Aktion (Aufwecken/Herunterfahren), Wochentage, Uhrzeit (Zeitzone aus `TZ`) und betrifft Gruppen
+  und/oder einzelne Geräte. Neue Gruppenmitglieder sind automatisch dabei.
+- Geräte, die schon an (bzw. aus) sind, werden übersprungen. Ein verpasster Termin – NetPulse war gerade aus – wird
+  höchstens 15 Minuten lang nachgeholt.
+- ▶ beim Zeitplan führt ihn sofort aus (zum Ausprobieren) und zeigt das Ergebnis je Gerät.
+- Jede Aktion landet unter *Ereignisse* beim Gerät und im Audit-Log; das letzte Ergebnis steht beim Zeitplan.
+- Gruppen, Zeitpläne und Ein/Aus-Einstellungen sind in der Sicherung enthalten.
+
 ---
 
 ## 8. Gerätedetails
@@ -459,7 +504,10 @@ reinen Leserechten** – NetPulse führt nur lesende Abfragen aus. Einrichtung j
 | SNMP v3 (empfohlen) | dito | Benutzer, SHA-256 + AES-128 empfohlen |
 | SSH mit Schlüssel (empfohlen) | Linux, NAS, Proxmox, Pi, OpenWrt, OPNsense, Windows (OpenSSH) | Schlüssel erzeugen siehe ABFRAGEN.md |
 | SSH mit Passwort | dito | wird **nie automatisch** ausprobiert, nur an ausgewählte Geräte |
-| HTTP / Web-Anmeldung | Shelly | geht nur an Geräte, die sich als Shelly ausgewiesen haben (Gen2+ per Digest) |
+| Windows-Remoteverwaltung (WinRM) | Windows ohne Zusatzsoftware | HTTPS + NTLM (oder Basic), PowerShell; gleiche Daten wie Windows über SSH, eigene Befehle und Herunterfahren als Aktion |
+| HTTP/REST-API mit Benutzer + Passwort | **jedes Gerät, jeder Dienst** mit Weboberfläche oder REST-API | Basic oder Digest, HTTPS mit gemerktem Zertifikat; nur fest zugeordnet. Was gelesen wird, legst du unter *Eigene Abfragen* fest |
+| HTTP/REST-API mit Token / API-Schlüssel | z. B. Home Assistant, Proxmox, Portainer, NAS-APIs | Header und Vorsatz frei wählbar (Standard `Authorization: Bearer …`); nur fest zugeordnet |
+| Shelly (HTTP) | Shelly | geht nur an Geräte, die sich als Shelly ausgewiesen haben (Gen2+ per Digest) |
 | UniFi-Controller | UniFi OS Server, Dream Machine, Cloud Key | API-Schlüssel (funktioniert mit 2FA) oder lokales Konto |
 | AVM FRITZ!Box | FRITZ!Box | TR-064, Digest-Anmeldung |
 | OPNsense | OPNsense-Firewall | API-Schlüssel + Secret eines Nur-Lese-Benutzers |
@@ -468,8 +516,42 @@ reinen Leserechten** – NetPulse führt nur lesende Abfragen aus. Einrichtung j
 **Automatisch vs. zugeordnet:**
 - **„Automatisch bei allen passenden Geräten verwenden“** (SNMP v3, SSH-Schlüssel, Shelly): NetPulse probiert die
   Zugangsdaten bei passenden Geräten selbst aus und ordnet sie bei Erfolg fest zu.
-- **Fest zugeordnet** (immer bei SSH-Passwort, SNMP v2c, UniFi, FRITZ!Box, OPNsense, MikroTik): Die Zugangsdaten gehen
-  nur an die Geräte, die du auswählst.
+- **Fest zugeordnet** (immer bei SSH-Passwort, SNMP v2c, HTTP/REST-API, UniFi, FRITZ!Box, OPNsense, MikroTik): Die
+  Zugangsdaten gehen nur an die Geräte, die du auswählst.
+
+**Vorlagen:** Beim Anlegen wählt *„Gerät / Dienst (Vorlage)“* für gängige Geräte (Windows, NAS, Proxmox, Home Assistant,
+iDRAC/iLO, Drucker, USV …) Art, Port und Einstellungen vor und zeigt, was am Gerät einzuschalten ist.
+
+**Hersteller / Dienst:** Freies Feld, z. B. „Ugreen“, „TrueNAS“ oder „Home Assistant“ – nur zur Übersicht. Für Geräte,
+die NetPulse nicht von Haus aus kennt, wählst du eine der **allgemeinen Arten** (SNMP, SSH, HTTP/REST) und legst
+fest, was abgefragt wird.
+
+### Eigene Abfragen und Aktionen
+
+Unter *Zugangsdaten → Eigene Abfragen und Aktionen* legst du selbst fest, was NetPulse von einem Gerät liest – mit
+beliebigen Zugangsdaten der Arten SSH, HTTP/REST oder SNMP:
+
+| Zugang | „Befehl / Pfad / OID“ | Beispiel |
+|---|---|---|
+| SSH | Befehl, der auf dem Gerät läuft | `cat /sys/class/thermal/thermal_zone0/temp` |
+| HTTP/REST | Pfad (`/api/status`) oder URL zum selben Gerät, Methode GET/POST/…, optional Body | `/api/states/sensor.temperatur`, Wert aus `state` |
+| SNMP | OID; ohne Einzelwert wird darunter gelesen | `1.3.6.1.2.1.43.10.2.1.4.1.1` (Seitenzähler) |
+
+- **Wert übernehmen aus:** bei JSON-Antworten ein Pfad wie `data.temp` oder `items.0.name`, sonst ein Text, hinter
+  dem der Wert steht (`Temperature:`). Leer = ganze Antwort. Typ **Zahl** nimmt die erste Zahl und zeichnet einen
+  Verlauf (7 Tage) auf.
+- **Abfrage** läuft bei jeder tiefen Abfrage der zugeordneten Geräte (oder nur der ausgewählten). Das Ergebnis steht in
+  der Geräteansicht im Reiter **Eigene Abfragen**; Fehler erscheinen auch im Reiter *Diagnose*.
+- **Aktion** (z. B. Herunterfahren, Neustart, Dienst neu starten) läuft **nie automatisch** – nur über „Ausführen“ in
+  der Geräteansicht (Recht *Geräte verwalten*, frische Anmeldung) oder durch Funktionen wie einen Zeitplan. Jede
+  Ausführung steht im Audit-Log und in den Ereignissen des Geräts.
+- **Vorlagen** füllen das Formular mit gängigen Beispielen (Laufzeit, RAID-/ZFS-Zustand, Docker, Updates, Herunterfahren
+  für Linux/Windows/Synology, Home Assistant, Proxmox, Drucker-Seitenzähler).
+- **Testen** zeigt vor dem Speichern die rohe Antwort und den übernommenen Wert. Aktionen werden beim Testen nicht
+  ausgeführt.
+- Sicherheit: HTTP-Zugangsdaten gehen nur an die IP des Geräts (URLs zu anderen Adressen werden abgelehnt), bei HTTPS
+  wird das Zertifikat beim ersten Kontakt gemerkt. Für Aktionen auf dem Gerät nur das nötige Recht vergeben (z. B.
+  `sudo` nur für `/sbin/shutdown`).
 
 **Geräte zuordnen:** Beim Anlegen oder über **„Geräte“** bei den Zugangsdaten. Die Liste lässt sich durchsuchen und nach
 Typ filtern; passende Geräte sind vorausgewählt. **„Testen & zuordnen“** prüft jedes Gerät und ordnet nur zu, wo die
@@ -536,6 +618,7 @@ zur Nachverfolgung sichtbar.
 | | RAM-Auslastung hoch | Schwelle in %, Dauer |
 | | Speicher fast voll | Schwelle in % |
 | | Temperatur hoch | Schwelle in °C |
+| | Toner/Tinte fast leer | Restfüllstand in % (Voreinstellung 15), Drucker oder alle |
 | Dienste | Dienst ausgefallen | Dienst (oder alle) |
 | | Zertifikat läuft ab | Dienst, Tage vor Ablauf |
 | Protokolle | Protokollmeldung (Syslog/Trap) | Suchtext (leer = alle), Mindest-Stufe, Gerät |

@@ -82,6 +82,22 @@ pub async fn run_command(
     Ok(result?.1)
 }
 
+/// Befehl ausführen, optional mit einem Skript über stdin (für Aktionen wie „Herunterfahren“, `power.rs`).
+/// Liefert (Exit-Code, Ausgabe, Host-Schlüssel). Kein Pool: Aktionen sind selten.
+pub async fn run_action(
+    ip: Ipv4Addr,
+    cred: &Credential,
+    expected_host_key: Option<&str>,
+    command: &str,
+    stdin: Option<&str>,
+) -> Result<(u32, String, String), SshError> {
+    let (session, host_key) = connect(ip, cred, expected_host_key).await?;
+    let result = exec(&session, command, stdin.map(str::as_bytes)).await;
+    let _ = session.disconnect(Disconnect::ByApplication, "", "de").await;
+    let (code, out) = result?;
+    Ok((code, out, host_key))
+}
+
 /// Offene Sitzungen für die Live-Ansicht (Gerät + Zugangsdaten → Sitzung, zuletzt benutzt).
 /// Spart den teuren Verbindungsaufbau alle 2 Sekunden – auf NetPulse und auf dem Gerät.
 type Pool = Mutex<HashMap<(Ipv4Addr, i64), (Arc<Handle<Client>>, std::time::Instant)>>;
@@ -320,7 +336,7 @@ exit 0
 "#;
 
 /// Liest Systemdaten unter Windows über CIM/WMI und gibt sie als JSON aus.
-const WINDOWS_SCRIPT: &str = r#"
+pub(crate) const WINDOWS_SCRIPT: &str = r#"
 $ErrorActionPreference = 'SilentlyContinue'
 $ProgressPreference = 'SilentlyContinue'
 $os = Get-CimInstance Win32_OperatingSystem
@@ -478,7 +494,7 @@ fn parse_posix(output: &str, uname: &str) -> Value {
     Value::Object(data)
 }
 
-fn parse_windows(output: &str) -> Result<Value> {
+pub(crate) fn parse_windows(output: &str) -> Result<Value> {
     // PowerShell schreibt über SSH manchmal Fortschrittsdaten („#< CLIXML“) davor – nur das JSON nehmen
     let start = output.find('{').ok_or_else(|| anyhow!("Keine Antwort von PowerShell – ist es ein Windows-Gerät?"))?;
     let end = output.rfind('}').ok_or_else(|| anyhow!("Unvollständige Antwort von PowerShell"))?;
@@ -549,3 +565,4 @@ mod tests {
         assert_eq!(v["disks"][0]["pct"], 75.0);
     }
 }
+

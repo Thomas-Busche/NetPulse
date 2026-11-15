@@ -389,6 +389,7 @@ async function viewDevice(id) {
   const canDev = (perm) => can(perm, data.device.site_id);
   const credentials = can('credentials.manage') ? await api('/credentials').catch(() => []) : [];
   const allDevices = canDev('devices.manage') ? await api('/devices').catch(() => []) : [];
+  let customQueries = await api(`/devices/${encodeURIComponent(id)}/queries`).catch(() => []);
   await loadSites();
 
   const tabs = () => {
@@ -396,12 +397,13 @@ async function viewDevice(id) {
     const list = [['overview', 'Übersicht']];
     // Live: Shelly über den Echtzeit-Stream, sonst Datenraten per SNMP/SSH (Netzwerk-Schnittstellen)
     if (isShelly()) list.push(['live', 'Live']);
-    else if (data.device.has_credentials && (inv.snmp || inv.ssh)) list.push(['live', 'Live']);
+    else if (data.device.has_credentials && (inv.snmp || (inv.ssh && inv.ssh.via !== 'winrm'))) list.push(['live', 'Live']);
     if (inv.unifi) list.push(['unifi', 'UniFi']);
     if (inv.unifi || inv.netclients) list.push(['clients', 'Verbundene Geräte']);
     if (inv.ssh || inv.snmp || inv.shelly || data.unifi_device || data.net_client) list.push(['system', 'System']);
     if ((inv.ssh && inv.ssh.interfaces && inv.ssh.interfaces.length) || (inv.snmp && inv.snmp.interfaces)) list.push(['interfaces', 'Schnittstellen']);
     if ((inv.ssh && inv.ssh.disks && inv.ssh.disks.length) || (inv.snmp && inv.snmp.storage && inv.snmp.storage.length)) list.push(['storage', 'Speicher']);
+    if (customQueries.length) list.push(['custom', 'Eigene Abfragen']);
     list.push(['history', 'Verlauf']);
     list.push(['events', 'Ereignisse']);
     if (canDev('devices.diagnose') && inv.snmp) list.push(['explorer', 'SNMP-Explorer']);
@@ -427,7 +429,7 @@ async function viewDevice(id) {
               ${d.os ? `<span class="badge plain">${esc(d.os)}</span>` : ''}
               ${d.model ? `<span class="badge plain">${esc(d.model)}</span>` : ''}</div></div>
           <div class="actions"><a href="#/devices" class="btn ghost">${icon('chevron-left', 'i-sm')} Alle Geräte</a>
-            ${canDev('devices.manage') ? `<button type="button" id="poll-now" class="ghost">${icon('refresh')}Jetzt abfragen</button>` : ''}</div>
+            ${canDev('devices.manage') ? `<button type="button" id="poll-now" class="ghost">${icon('refresh')}Jetzt abfragen</button>${powerHeroButtons(d)}` : ''}</div>
         </div>
         <div class="fact-strip">
           ${[
@@ -444,12 +446,13 @@ async function viewDevice(id) {
         <div id="tab-body"></div>
       </div>`;
     $$('.tabs button').forEach((b) => b.addEventListener('click', () => { tab = b.dataset.tab; render(); }));
+    if (canDev('devices.manage')) bindPowerHero(d, async () => { await reload(); render(); });
     $('#poll-now')?.addEventListener('click', () => attempt(async () => {
       await api(`/devices/${id}/poll`, { method: 'POST' });
       setTimeout(reload, 8000);
     }, 'Abfrage gestartet – Ergebnisse erscheinen in wenigen Sekunden'));
     const body = $('#tab-body');
-    const renderers = { overview: tabOverview, live: isShelly() ? tabShellyLive : tabLive, diagnose: tabDiagnose, syslog: () => '<div id="dev-syslog"><div class="empty">Lade …</div></div>', system: tabSystem, interfaces: tabInterfaces, storage: tabStorage, history: tabHistory, events: tabEvents, explorer: tabExplorer, settings: tabSettings, unifi: tabUnifi, clients: () => '<div id="uc-area"><div class="empty">Lade …</div></div>' };
+    const renderers = { overview: tabOverview, live: isShelly() ? tabShellyLive : tabLive, diagnose: tabDiagnose, syslog: () => '<div id="dev-syslog"><div class="empty">Lade …</div></div>', system: tabSystem, interfaces: tabInterfaces, storage: tabStorage, history: tabHistory, events: tabEvents, explorer: tabExplorer, settings: tabSettings, custom: tabCustom, unifi: tabUnifi, clients: () => '<div id="uc-area"><div class="empty">Lade …</div></div>' };
     body.innerHTML = (renderers[tab] || tabOverview)();
     applyWidths(body);
     if (tab === 'settings') bindSettings();
@@ -467,6 +470,7 @@ async function viewDevice(id) {
     if (tab === 'unifi') bindUnifi();
     if (tab === 'clients') bindClients();
     if (tab === 'explorer') bindExplorer();
+    if (tab === 'custom') bindCustom();
     $('#range')?.addEventListener('change', (ev) => { hours = Number(ev.target.value); reload(); });
     $('#goto-diagnose')?.addEventListener('click', (ev) => { ev.preventDefault(); tab = 'diagnose'; render(); });
   };
@@ -713,6 +717,58 @@ async function viewDevice(id) {
     };
     update();
     onLive((msg) => { if (msg.type === 'shelly' && (msg.full || (msg.devices || []).some((d) => d.id === Number(id)))) update(); });
+  }
+
+  // ----- Eigene Abfragen und Aktionen -----
+  function tabCustom() {
+    const reads = customQueries.filter((q) => q.mode === 'read');
+    const actions = customQueries.filter((q) => q.mode === 'action');
+    const value = (q) => {
+      if (q.value_num != null) return `${Number(q.value_num).toLocaleString('de-DE', { maximumFractionDigits: 2 })}${q.unit ? ` ${q.unit}` : ''}`;
+      if (q.value_text != null) return `${q.value_text}${q.unit ? ` ${q.unit}` : ''}`;
+      return '–';
+    };
+    const status = (q) => (q.ok == null ? '<span class="muted small">noch nicht gelaufen</span>'
+      : q.ok ? `<span class="ok small">${icon('circle-check', 'i-sm')} ${esc(fmtAgo(q.time))}</span>`
+        : `<span class="error small" title="${esc(q.error || '')}">${icon('circle-x', 'i-sm')} ${esc(q.error || 'Fehler')}</span>`);
+    return `${reads.length ? `<section><h3>Abfragen</h3><div class="table-wrap"><table><thead><tr><th>Name</th><th>Wert</th><th>Zuletzt</th><th>Zugangsdaten</th><th></th></tr></thead>
+      <tbody>${reads.map((q) => `<tr><td>${esc(q.name)}</td><td class="cq-value">${esc(value(q))}</td><td>${status(q)}</td><td class="muted small">${esc(q.credential_name)}</td>
+        <td class="actions">${canDev('devices.diagnose') ? `<button type="button" class="ghost sm" data-qrun="${q.id}" title="Jetzt abfragen">${icon('refresh', 'i-sm')}</button>` : ''}</td></tr>`).join('')}</tbody></table></div>
+      <div id="cq-chart"></div></section>` : ''}
+      ${actions.length ? `<section><h3>Aktionen</h3><div class="table-wrap"><table><thead><tr><th>Name</th><th>Zuletzt</th><th>Zugangsdaten</th><th></th></tr></thead>
+      <tbody>${actions.map((q) => `<tr><td>${esc(q.name)}</td><td>${status(q)}</td><td class="muted small">${esc(q.credential_name)}</td>
+        <td class="actions">${canDev('devices.manage') ? `<button type="button" class="sm" data-qact="${q.id}">${icon('player-play', 'i-sm')}Ausführen</button>` : ''}</td></tr>`).join('')}</tbody></table></div></section>` : ''}
+      ${can('credentials.manage') ? '<p class="muted small">Abfragen und Aktionen verwaltest du unter <a href="#/credentials">Zugangsdaten → Eigene Abfragen</a>.</p>' : ''}`;
+  }
+
+  function bindCustom() {
+    const refresh = async () => { customQueries = await api(`/devices/${id}/queries`).catch(() => customQueries); render(); };
+    const run = async (btn, qid) => {
+      btn.disabled = true;
+      try {
+        const r = await api(`/queries/${qid}/run`, { method: 'POST', body: { device_id: Number(id) } });
+        toast(r.message, !r.ok);
+        await refresh();
+      } catch (e) {
+        toast(e.message, true);
+        btn.disabled = false;
+      }
+    };
+    $$('[data-qrun]').forEach((b) => b.addEventListener('click', () => run(b, b.dataset.qrun)));
+    $$('[data-qact]').forEach((b) => b.addEventListener('click', () => {
+      const q = customQueries.find((x) => x.id === Number(b.dataset.qact));
+      if (!confirm(`Aktion „${q.name}“ jetzt auf ${deviceLabel(data.device)} ausführen?`)) return;
+      run(b, q.id);
+    }));
+    // Verlauf der Zahlen-Abfragen (höchstens vier)
+    const numeric = customQueries.filter((q) => q.mode === 'read' && q.value_type === 'number').slice(0, 4);
+    const box = $('#cq-chart');
+    if (box && numeric.length) {
+      Promise.all(numeric.map((q) => api(`/queries/${q.id}/history/${id}`).catch(() => []))).then((series) => {
+        box.innerHTML = numeric.map((q, i) => (series[i].length > 1 ? `<h3>${esc(q.name)} <span class="muted">· 7 Tage</span></h3>
+          ${lineChart(series[i], { series: [{ key: 'value', label: q.name }], format: (v) => `${Number(v).toLocaleString('de-DE', { maximumFractionDigits: 2 })}${q.unit ? ` ${q.unit}` : ''}`, width: 760 })}` : '')).join('');
+      });
+    }
   }
 
   // ----- Diagnose -----
@@ -1024,12 +1080,7 @@ async function viewDevice(id) {
       extra += `<section class="card"><header><h2>${icon('temperature')}Sensoren</h2></header><ul class="list">
         ${snmp.sensors.slice(0, 30).map((x) => `<li><span class="ellipsis">${esc(x.name || x.kind)}</span><span class="meta">${esc(x.value)} ${esc((x.kind.match(/\((.*)\)/) || [])[1] || '')}</span></li>`).join('')}</ul></section>`;
     }
-    if (snmp && snmp.printer && snmp.printer.length) {
-      extra += `<section class="card"><header><h2>${icon('printer')}Verbrauchsmaterial</h2></header>
-        ${snmp.printer.map((s) => `<div class="meter-row"><span class="ellipsis">${esc(s.descr || 'Material')}</span>
-          ${s.pct != null ? `<div class="meter ${s.pct <= 10 ? 'crit' : s.pct <= 25 ? 'warn' : ''}"><span data-w="${s.pct}"></span></div>` : '<span class="muted small">Füllstand unbekannt</span>'}
-          <span class="small">${s.pct != null ? `${s.pct} %` : ''}</span></div>`).join('')}</section>`;
-    }
+    if (snmp && snmp.printer && snmp.printer.length) extra += printerCard(snmp.printer, snmp.printer_info || {});
     if (snmp && snmp.ups) {
       const u = snmp.ups;
       extra += `<section class="card"><header><h2>${icon('battery-charging')}USV</h2></header><dl class="details">
@@ -1051,6 +1102,36 @@ async function viewDevice(id) {
       ? `<div class="grid">${rows.length ? `<section class="${extra ? 'span-2' : 'span-3'}"><dl class="details">${rows.join('')}</dl></section>` : ''}
         ${extra ? `<div class="stack-v ${rows.length ? 'span-1' : 'span-3'}">${extra}</div>` : ''}</div>` : '';
     return `${top}${unifiHtml ? `<div class="stack-v${top ? ' gap-top' : ''}">${unifiHtml}</div>` : ''}` || empty('Keine Angaben', 'box');
+  }
+
+  // ----- Drucker (Printer-MIB) -----
+  const TONER_COLORS = ['black', 'cyan', 'magenta', 'yellow'];
+  const SUPPLY_KIND = { toner: 'Toner', ink: 'Tinte', drum: 'Trommel', waste: 'Resttonerbehälter', developer: 'Entwickler', fuser: 'Fixiereinheit', transfer: 'Transfereinheit', staples: 'Heftklammern' };
+  const PRINTER_STATUS = { idle: ['bereit', 'st-up'], printing: ['druckt', 'accent'], warmup: ['wärmt auf', 'warn'] };
+  function printerCard(supplies, info) {
+    const state = (s) => ({ some: 'noch vorhanden', unknown: 'Füllstand unbekannt', empty: 'leer', full: 'voll' }[s.state] || '');
+    const row = (s) => {
+      // Resttonerbehälter: hoher Füllstand ist schlecht
+      const bad = s.receptacle ? (s.pct >= 95 ? 'crit' : s.pct >= 85 ? 'warn' : '') : (s.pct <= 10 ? 'crit' : s.pct <= 25 ? 'warn' : '');
+      const color = TONER_COLORS.includes(s.color) ? ` toner-${s.color}` : '';
+      const sub = [SUPPLY_KIND[s.kind], s.receptacle ? 'Füllstand' : ''].filter(Boolean).join(' · ');
+      return `<div class="meter-row"><span><div class="ellipsis">${esc(s.descr || SUPPLY_KIND[s.kind] || 'Material')}</div>${sub ? `<div class="muted small">${esc(sub)}</div>` : ''}</span>
+        ${s.pct != null ? `<div class="meter ${bad}${color}"><span data-w="${s.pct}"></span></div>` : `<span class="muted small">${esc(state(s))}</span>`}
+        <span class="small">${s.state === 'empty' ? '<span class="badge sev-critical">leer</span>' : s.pct != null ? `${s.pct} %` : ''}</span></div>`;
+    };
+    const status = PRINTER_STATUS[info.status];
+    const badges = [status ? `<span class="badge ${status[1]}">${esc(status[0])}</span>` : '',
+      ...(info.errors || []).map((e) => `<span class="badge warn">${esc(e)}</span>`)].join(' ');
+    const trays = (info.trays || []).map((t) => `<li><span class="lead">${icon('file-text', 'i-sm')}<span class="ellipsis">${esc(t.name || 'Fach')}${t.media ? ` <span class="muted small">${esc(t.media)}</span>` : ''}</span></span>
+      <span class="meta">${t.state === 'empty' ? '<span class="badge sev-critical">leer</span>' : t.pct != null ? `${esc(t.pct)} %` : t.state === 'some' ? 'Papier vorhanden' : '–'}${t.max > 0 ? ` <span class="muted small">(max. ${esc(t.max)} Blatt)</span>` : ''}</span></li>`).join('');
+    return `<section class="card"><header><h2>${icon('printer')}Drucker</h2>${info.page_count != null ? `<span class="badge plain">${esc(Number(info.page_count).toLocaleString('de-DE'))} Seiten</span>` : ''}</header>
+      ${badges.trim() ? `<p>${badges}</p>` : ''}
+      ${(info.display || []).length ? `<p class="muted small">Anzeige: ${esc(info.display.join(' · '))}</p>` : ''}
+      <h3 class="small muted">Verbrauchsmaterial</h3>${supplies.map(row).join('')}
+      ${trays ? `<h3 class="small muted">Papierfächer</h3><ul class="list">${trays}</ul>` : ''}
+      ${(info.alerts || []).length ? `<h3 class="small muted">Meldungen des Druckers</h3><ul class="list">${info.alerts.map((a) => `<li><span class="ellipsis">${esc(a.message)}</span>
+        <span class="meta"><span class="badge ${a.severity === 'critical' ? 'sev-critical' : a.severity === 'warning' ? 'sev-warn' : 'sev-info'}">${a.severity === 'critical' ? 'kritisch' : a.severity === 'warning' ? 'Warnung' : 'Hinweis'}</span></span></li>`).join('')}</ul>` : ''}
+    </section>`;
   }
 
   // ----- Schnittstellen -----
@@ -1181,6 +1262,7 @@ async function viewDevice(id) {
         ${data.ssh_host_key || data.tls_pin ? `<button type="button" class="ghost sm" id="reset-key">${icon('refresh', 'i-sm')}Gemerkte Schlüssel vergessen</button>
           <p class="hint">Nur nach einer Neuinstallation des Geräts nötig – oder wenn die Diagnose „Zertifikat geändert“ meldet und du sicher bist, dass das Gerät neu aufgesetzt wurde.</p>` : ''}
       </section>
+      ${powerSettingsSection()}
       <section class="span-1"><h3>Gerät entfernen</h3>
         <p class="muted small">Löscht das Gerät mit allen Messwerten und Ereignissen. Wird es beim nächsten Scan wieder gefunden, taucht es neu auf.</p>
         <button type="button" class="danger" id="dev-delete">${icon('trash')}Gerät löschen</button></section>
@@ -1189,6 +1271,7 @@ async function viewDevice(id) {
 
   function bindSettings() {
     makeSearchable($('#dev-form select[name="parent_id"]'), 'Übergeordnetes Gerät suchen …');
+    bindPowerSettings(data.device, credentials).catch((e) => { const b = $('#power-settings'); if (b) b.innerHTML = `<p class="muted">${esc(e.message)}</p>`; });
     $('#dev-form').addEventListener('submit', (ev) => {
       ev.preventDefault();
       const f = new FormData(ev.target);

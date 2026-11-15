@@ -19,7 +19,7 @@ const $ = (sel, root = document) => root.querySelector(sel);
 const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 const esc = (value) => String(value ?? '').replace(/[&<>"']/g, (c) => ESCAPES[c]);
-const icon = (name, cls = '') => `<svg class="i ${cls}"><use href="icons.svg?v=0.9.17#i-${name}"/></svg>`;
+const icon = (name, cls = '') => `<svg class="i ${cls}"><use href="icons.svg?v=0.9.19#i-${name}"/></svg>`;
 
 const state = { user: null, refreshTimer: null, globalTimer: null, summary: null, liveStops: [] };
 
@@ -299,7 +299,8 @@ const statusBadge = (d) =>
     : d.paused ? `<span class="badge paused" title="Überwachung pausiert – ${esc(d.paused)}"><span class="dot unknown"></span>pausiert</span>`
     : `<span class="badge st-${esc(d.status)}"><span class="dot ${esc(d.status)}"></span>${esc(STATUS_LABEL[d.status] || d.status)}</span>`;
 const EVENT_LABEL = { up: 'online', down: 'offline', discovered: 'neu', added: 'angelegt', mac_changed: 'MAC geändert', ssh_key_changed: 'SSH-Schlüssel',
-  check_down: 'Dienst aus', check_up: 'Dienst ok', check_warn: 'Dienst-Warnung', job_failed: 'Backup-Fehler' };
+  check_down: 'Dienst aus', check_up: 'Dienst ok', check_warn: 'Dienst-Warnung', job_failed: 'Backup-Fehler',
+  power_wake: 'Aufwecken', power_shutdown: 'Herunterfahren', custom_action: 'Aktion' };
 const eventBadge = (kind) => `<span class="badge ev-${esc(kind)}">${esc(EVENT_LABEL[kind] || kind)}</span>`;
 const deviceLabel = (d) => d.name || d.reported_name || d.hostname || d.ip;
 
@@ -1555,7 +1556,7 @@ function showLogin() {
       <p class="error" id="kiosk-error"></p>
       <button type="button" class="link-btn" id="kiosk-back">Zurück zur normalen Anmeldung</button>
     </form>
-    <div class="maker maker-login"><img src="buschehome.png" alt="BuscheHome-Logo" width="40" height="40"><span>ein Projekt von <b>BuscheHome</b></span></div></div>`;
+    <p class="maker maker-login"><a href="https://www.buschehome.de" target="_blank" rel="noopener noreferrer"><img src="buschehome.png" alt="BuscheHome-Logo" width="40" height="40"><span>ein Projekt von <b>BuscheHome</b></span></a><a class="maker-src" href="https://github.com/Thomas-Busche/NetPulse" target="_blank" rel="noopener noreferrer" title="Quellcode und Lizenz (AGPL-3.0) auf GitHub">Quellcode</a></p></div>`;
   const toggleKiosk = (on) => { $('#login-form').hidden = on; $('#kiosk-form').hidden = !on; };
   // Zentrale Anmeldung: Knopf nur, wenn eingerichtet; Fehler kommen per Rücksprung als #sso-error=…
   if (ssoError) $('#login-error').textContent = ssoError;
@@ -1611,6 +1612,7 @@ const ROUTES = {
   checks: { title: 'Dienste', view: () => viewChecks() },
   map: { title: 'Netzwerkkarte', view: () => viewMap() },
   energy: { title: 'Energie', view: (a, p) => viewEnergy(a, p) },
+  power: { title: 'Ein/Aus', view: () => viewPower() },
   syslog: { title: 'Protokolle', view: (a, p) => viewSyslog(a, p), perm: 'devices.diagnose' },
   statuspage: { title: 'Statusseite', view: () => viewStatusPage(), perm: 'settings.manage' },
   setup: { title: 'Einrichtung', view: (a, p) => viewSetup(a, p), perm: 'networks.manage' },

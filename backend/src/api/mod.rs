@@ -5,11 +5,13 @@ mod alerts;
 mod backup;
 mod checks;
 mod credentials;
+mod queries;
 mod dashboard;
 mod devices;
 mod energy;
 mod integrations;
 mod oidc;
+mod power;
 mod probes;
 mod public;
 mod session;
@@ -66,6 +68,15 @@ pub fn router(state: AppState) -> Router {
         .route("/devices/{id}/live", get(devices::live))
         .route("/devices/{id}/interfaces/history", get(devices::interface_history))
         .route("/devices/{id}/snmp", get(devices::snmp_explorer))
+        // Ein/Aus: Wake-on-LAN, Herunterfahren, Gruppen, Zeitpläne
+        .route("/devices/{id}/power", get(power::get_device).put(power::put_device))
+        .route("/devices/{id}/power/{action}", post(power::run_device))
+        .route("/device-groups", get(power::list_groups).post(power::create_group))
+        .route("/device-groups/{id}", axum::routing::patch(power::update_group).delete(power::delete_group))
+        .route("/device-groups/{id}/power/{action}", post(power::run_group))
+        .route("/power-schedules", get(power::list_schedules).post(power::create_schedule))
+        .route("/power-schedules/{id}", axum::routing::patch(power::update_schedule).delete(power::delete_schedule))
+        .route("/power-schedules/{id}/run", post(power::run_schedule_now))
         .route("/events", get(devices::events))
         .route("/clients", get(devices::unifi_clients))
         .route("/clients/import", post(devices::unifi_import))
@@ -117,6 +128,13 @@ pub fn router(state: AppState) -> Router {
         .route("/credentials/{id}/test", post(credentials::test))
         .route("/credentials/{id}/scan", post(credentials::scan).get(credentials::scan_status))
         .route("/credentials/{id}/devices", get(credentials::devices).put(credentials::set_devices))
+        // Eigene Abfragen und Aktionen
+        .route("/queries", get(queries::list).post(queries::create))
+        .route("/queries/test", post(queries::test))
+        .route("/queries/{id}", axum::routing::patch(queries::update).delete(queries::remove))
+        .route("/queries/{id}/run", post(queries::run))
+        .route("/queries/{id}/history/{device_id}", get(queries::history))
+        .route("/devices/{id}/queries", get(queries::for_device))
         // Alarmierung
         .route("/channels", get(alerts::list_channels).post(alerts::create_channel))
         .route("/channels/{id}", axum::routing::patch(alerts::update_channel).delete(alerts::delete_channel))

@@ -28,6 +28,7 @@ mod maintenance;
 mod mib;
 mod oui;
 mod perf;
+mod power;
 mod probe;
 mod push;
 mod routers;
@@ -140,6 +141,7 @@ async fn main() -> Result<()> {
     tokio::spawn(energy::run(state.clone()));
     tokio::spawn(backup::run(state.clone()));
     tokio::spawn(integration::run(state.clone()));
+    tokio::spawn(power::run(state.clone()));
     syslog::start(&state);
     tokio::spawn(mib::load(state.db.clone()));
     tokio::spawn(maintenance(state.clone()));

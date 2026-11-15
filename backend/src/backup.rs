@@ -140,7 +140,7 @@ pub async fn export(state: &AppState) -> Result<Value> {
         sealed.as_str().and_then(|s| vault.open_value::<Value>(s).ok()).unwrap_or(Value::Null)
     };
 
-    let mut credentials = rows(db, "SELECT id, name, kind, username, port, secret, auto FROM credentials").await?;
+    let mut credentials = rows(db, "SELECT id, name, kind, username, port, secret, auto, options FROM credentials").await?;
     for c in &mut credentials {
         c["secret"] = open(&c["secret"]);
     }
@@ -185,9 +185,11 @@ pub async fn export(state: &AppState) -> Result<Value> {
         "credentials": credentials,
         "devices": rows(db, "SELECT id, host(ip) AS ip, mac, hostname, name, notes, monitored, device_type, device_type_manual,
                                     wan_interface, wan_interface_manual, parent_id, parent_manual, energy_role, ssh_host_key, tls_pin,
-                                    vendor, model, os, reported_name, integration, first_seen, open_ports, site_id, tags
+                                    vendor, model, os, reported_name, integration, first_seen, open_ports, site_id, tags, power
                                FROM devices").await?,
         "device_credentials": rows(db, "SELECT device_id, credential_id FROM device_credentials").await?,
+        "custom_queries": rows(db, "SELECT name, credential_id, mode, target, method, body, extract, value_type, unit, device_ids, enabled
+                                      FROM custom_queries").await?,
         "channels": channels,
         "checks": rows(db, "SELECT id, name, kind, target, config, interval_s, timeout_s, device_id, enabled, site_id FROM checks").await?,
         "alert_rules": rows(db, "SELECT name, kind, device_id, threshold, duration_min, channel_ids, notify_recovery, enabled,
@@ -195,6 +197,9 @@ pub async fn export(state: &AppState) -> Result<Value> {
                                         escalate_channel_ids, escalate_group_ids FROM alert_rules").await?,
         "maintenance": rows(db, "SELECT name, kind, starts_at, ends_at, days, time_from, time_to, device_ids, check_ids, site_ids, enabled
                                    FROM maintenance_windows").await?,
+        "device_groups": rows(db, "SELECT id, name, notes FROM device_groups").await?,
+        "device_group_members": rows(db, "SELECT group_id, device_id FROM device_group_members").await?,
+        "power_schedules": rows(db, "SELECT name, action, days, time, device_ids, group_ids, enabled FROM power_schedules").await?,
         "users": users,
         "roles": rows(db, "SELECT id, name, description, permissions, all_permissions, builtin FROM roles").await?,
         "groups": rows(db, "SELECT id, name, description, oidc_group FROM user_groups").await?,
@@ -218,10 +223,13 @@ pub struct RestoreReport {
     pub networks: usize,
     pub devices: usize,
     pub credentials: usize,
+    pub custom_queries: usize,
     pub channels: usize,
     pub checks: usize,
     pub alert_rules: usize,
     pub maintenance: usize,
+    pub device_groups: usize,
+    pub power_schedules: usize,
     pub users: usize,
     pub roles: usize,
     pub groups: usize,
@@ -335,21 +343,23 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
         }
         let sealed = vault.seal(&c["secret"])?;
         let port = c["port"].as_i64().map(|v| v as i32);
+        let options = c.get("options").filter(|o| o.is_object()).cloned().unwrap_or_else(|| json!({}));
         let id = match find(&mut tx, "SELECT id FROM credentials WHERE name = $1 AND kind = $2 ORDER BY id LIMIT 1", &[name, kind]).await? {
             Some(id) => {
-                sqlx::query("UPDATE credentials SET username = $2, port = $3, secret = $4, auto = $5 WHERE id = $1")
+                sqlx::query("UPDATE credentials SET username = $2, port = $3, secret = $4, auto = $5, options = $6 WHERE id = $1")
                     .bind(id)
                     .bind(s(&c["username"]))
                     .bind(port)
                     .bind(&sealed)
                     .bind(c["auto"].as_bool().unwrap_or(false))
+                    .bind(&options)
                     .execute(&mut *tx)
                     .await?;
                 id
             }
             None => {
                 sqlx::query_scalar(
-                    "INSERT INTO credentials (name, kind, username, port, secret, auto) VALUES ($1, $2, $3, $4, $5, $6) RETURNING id",
+                    "INSERT INTO credentials (name, kind, username, port, secret, auto, options) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING id",
                 )
                 .bind(name)
                 .bind(kind)
@@ -357,6 +367,7 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
                 .bind(port)
                 .bind(&sealed)
                 .bind(c["auto"].as_bool().unwrap_or(false))
+                .bind(&options)
                 .fetch_one(&mut *tx)
                 .await?
             }
@@ -418,6 +429,86 @@ pub async fn restore(state: &AppState, p: &Value) -> Result<RestoreReport> {
                 .execute(&mut *tx)
                 .await?;
         }
+    }
+
+    // Eigene Abfragen (je Zugangsangabe + Name)
+    for q in list(p, "custom_queries") {
+        let (Some(cred), Some(name), Some(target)) = (map_id(&cred_ids, &q["credential_id"]), q["name"].as_str(), q["target"].as_str()) else {
+            continue;
+        };
+        let device_ids: Option<Vec<i64>> =
+            q["device_ids"].as_array().map(|ids| ids.iter().filter_map(|id| map_id(&dev_ids, id)).collect());
+        sqlx::query(
+            "INSERT INTO custom_queries (name, credential_id, mode, target, method, body, extract, value_type, unit, device_ids, enabled)
+             VALUES ($1, $2, COALESCE($3, 'read'), $4, COALESCE($5, 'GET'), $6, $7, COALESCE($8, 'text'), $9, $10, COALESCE($11, true))
+             ON CONFLICT (credential_id, name) DO UPDATE SET mode = EXCLUDED.mode, target = EXCLUDED.target, method = EXCLUDED.method,
+                body = EXCLUDED.body, extract = EXCLUDED.extract, value_type = EXCLUDED.value_type, unit = EXCLUDED.unit,
+                device_ids = EXCLUDED.device_ids, enabled = EXCLUDED.enabled",
+        )
+        .bind(name)
+        .bind(cred)
+        .bind(s(&q["mode"]))
+        .bind(target)
+        .bind(s(&q["method"]))
+        .bind(s(&q["body"]))
+        .bind(s(&q["extract"]))
+        .bind(s(&q["value_type"]))
+        .bind(s(&q["unit"]))
+        .bind(device_ids)
+        .bind(q["enabled"].as_bool())
+        .execute(&mut *tx)
+        .await?;
+        report.custom_queries += 1;
+    }
+
+    // Ein/Aus: Einstellungen je Gerät (Verweise auf Zugangsdaten umschreiben), Gruppen (Name), Zeitpläne (Name)
+    for d in list(p, "devices") {
+        let (Some(id), Some(power)) = (map_id(&dev_ids, &d["id"]), d["power"].as_object()) else { continue };
+        let mut power = Value::Object(power.clone());
+        for key in ["ssh_credential_id", "http_credential_id"] {
+            if !power[key].is_null() {
+                power[key] = json!(map_id(&cred_ids, &power[key]));
+            }
+        }
+        sqlx::query("UPDATE devices SET power = $2 WHERE id = $1").bind(id).bind(&power).execute(&mut *tx).await?;
+    }
+    let mut dev_group_ids = Ids::new();
+    for g in list(p, "device_groups") {
+        let (Some(old), Some(name)) = (g["id"].as_i64(), g["name"].as_str()) else { continue };
+        let id: i64 = sqlx::query_scalar(
+            "INSERT INTO device_groups (name, notes) VALUES ($1, $2) ON CONFLICT (name) DO UPDATE SET notes = EXCLUDED.notes RETURNING id",
+        )
+        .bind(name)
+        .bind(g["notes"].as_str())
+        .fetch_one(&mut *tx)
+        .await?;
+        dev_group_ids.insert(old, id);
+        report.device_groups += 1;
+    }
+    for m in list(p, "device_group_members") {
+        if let (Some(group), Some(dev)) = (map_id(&dev_group_ids, &m["group_id"]), map_id(&dev_ids, &m["device_id"])) {
+            sqlx::query("INSERT INTO device_group_members (group_id, device_id) VALUES ($1, $2) ON CONFLICT DO NOTHING")
+                .bind(group)
+                .bind(dev)
+                .execute(&mut *tx)
+                .await?;
+        }
+    }
+    for ps in list(p, "power_schedules") {
+        let Some(name) = ps["name"].as_str() else { continue };
+        let mut row = ps.clone();
+        row["device_ids"] = json!(map_ids(&dev_ids, &ps["device_ids"]));
+        row["group_ids"] = json!(map_ids(&dev_group_ids, &ps["group_ids"]));
+        sqlx::query("DELETE FROM power_schedules WHERE name = $1").bind(name).execute(&mut *tx).await?;
+        sqlx::query(
+            "INSERT INTO power_schedules (name, action, days, time, device_ids, group_ids, enabled, last_run_at)
+             SELECT r.name, r.action, r.days, r.time, COALESCE(r.device_ids, '{}'), COALESCE(r.group_ids, '{}'), COALESCE(r.enabled, true), now()
+               FROM jsonb_to_record($1) AS r(name text, action text, days int[], time text, device_ids bigint[], group_ids bigint[], enabled bool)",
+        )
+        .bind(&row)
+        .execute(&mut *tx)
+        .await?;
+        report.power_schedules += 1;
     }
 
     // Benachrichtigungskanäle (Name)
