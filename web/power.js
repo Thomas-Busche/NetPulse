@@ -57,14 +57,20 @@ async function bindPowerSettings(d, credentials) {
   const sshCreds = credentials.filter((x) => x.kind.startsWith('ssh'));
   const httpCreds = credentials.filter((x) => ['http', 'ssh_password', 'unifi', 'fritzbox', 'opnsense', 'mikrotik', 'http_basic'].includes(x.kind));
   const inGroup = new Set(p.groups.map((g) => g.id));
+  // Was ohne Auswahl greift: zugeordnete Zugangsdaten, sonst automatische SSH-Schlüssel
+  const sshAuto = p.ssh_credentials.length ? `automatisch: zugeordnet (${p.ssh_credentials.map((x) => x.name).join(', ')})`
+    : p.auto_ssh_credentials.length ? `automatisch: SSH-Schlüssel ausprobieren (${p.auto_ssh_credentials.map((x) => x.name).join(', ')})`
+    : 'automatisch (kein passender Zugang vorhanden)';
+  // Greift automatisch nichts und gibt es genau einen SSH-Zugang, diesen gleich vorschlagen
+  const sshChosen = c.ssh_credential_id || (!p.ssh_credentials.length && !p.auto_ssh_credentials.length && sshCreds.length === 1 ? sshCreds[0].id : null);
   box.innerHTML = `<form class="form" id="power-form">
     <label>Aufwecken<select name="wake">
       <option value="wol"${wake === 'wol' ? ' selected' : ''}>Wake-on-LAN (Magic Packet)</option>
       <option value="http"${wake === 'http' ? ' selected' : ''}>HTTP-Aufruf (z. B. Steckdose einschalten)</option>
       <option value="none"${wake === 'none' ? ' selected' : ''}>nicht möglich</option></select></label>
     <div data-show="wake:wol" class="form">
-      <div class="form-row"><label>MAC-Adresse<input name="wol_mac" maxlength="20" value="${esc(c.wol_mac || '')}" placeholder="${esc(p.mac || 'aa:bb:cc:dd:ee:ff')}"></label>
-        <label>Port<input name="wol_port" type="number" min="1" max="65535" value="${esc(c.wol_port || '')}" placeholder="9"></label></div>
+      <div class="form-row"><label>MAC-Adresse${!c.wol_mac && p.mac ? ' (erkannt)' : ''}<input name="wol_mac" maxlength="20" value="${esc(c.wol_mac || p.mac || '')}" placeholder="aa:bb:cc:dd:ee:ff"></label>
+        <label>Port<input name="wol_port" type="number" min="1" max="65535" value="${esc(c.wol_port || 9)}"></label></div>
       <label>Zusätzliche Broadcast-Adresse (optional)<input name="wol_broadcast" maxlength="15" value="${esc(c.wol_broadcast || '')}" placeholder="z. B. 192.168.20.255 für ein anderes VLAN"></label>
       <p class="hint">Gesendet wird an: ${esc(p.wol_targets.join(', '))}. Im Gerät (BIOS/UEFI, Netzwerkkarte) muss Wake-on-LAN eingeschaltet sein.</p></div>
     <div data-show="wake:http"><label>Adresse zum Aufwecken<input name="wake_url" maxlength="2000" value="${esc(c.wake_url || '')}" placeholder="http://192.168.1.50/relay/0?turn=on"></label></div>
@@ -73,8 +79,8 @@ async function bindPowerSettings(d, credentials) {
       <option value="http"${shut === 'http' ? ' selected' : ''}>HTTP-Aufruf (z. B. Home Assistant, eigenes Skript)</option>
       <option value="none"${shut === 'none' ? ' selected' : ''}>nicht möglich</option></select></label>
     <div data-show="shutdown:ssh" class="form">
-      <label>SSH-Zugang<select name="ssh_credential_id"${credManage ? '' : ' disabled'}>${credOptions(sshCreds, c.ssh_credential_id,
-        p.ssh_credentials.length ? `wie zugeordnet (${p.ssh_credentials.map((x) => x.name).join(', ')})` : 'wie zugeordnet (noch keiner)')}</select></label>
+      <label>SSH-Zugang<select name="ssh_credential_id"${credManage ? '' : ' disabled'}>${credOptions(sshCreds, sshChosen, sshAuto)}</select></label>
+      ${sshChosen && !c.ssh_credential_id ? `<p class="hint">Vorgeschlagen, weil es dein einziger SSH-Zugang ist – mit „Speichern“ übernehmen.</p>` : ''}
       <label>Eigener Befehl (optional)<input name="shutdown_command" maxlength="1000" value="${esc(c.shutdown_command || '')}" placeholder="${/windows/i.test(p.os || '') ? 'shutdown /s /t 5 /f' : 'automatisch: shutdown -h now (als root oder per sudo)'}"></label>
       <p class="hint">Ohne Befehl nimmt NetPulse unter Linux <code>shutdown</code>/<code>poweroff</code> – als root oder mit sudo ohne Passwort für genau diesen Befehl,
         z. B. in <code>/etc/sudoers.d/netpulse</code>: <code>netpulse ALL=(root) NOPASSWD: /sbin/shutdown</code>. Unter Windows <code>shutdown /s</code> (Konto mit Admin-Rechten).</p></div>
@@ -99,7 +105,11 @@ async function bindPowerSettings(d, credentials) {
     ev.preventDefault();
     const e = form.elements;
     const num = (v) => (v ? Number(v) : null);
-    const body = { wake: e.wake.value, wol_mac: e.wol_mac.value, wol_port: num(e.wol_port.value), wol_broadcast: e.wol_broadcast.value, wake_url: e.wake_url.value,
+    // Erkannte Werte nicht fest speichern – so folgt NetPulse einer neuen MAC (z. B. nach Tausch der Netzwerkkarte)
+    const macNorm = (m) => String(m || '').toLowerCase().replace(/[^0-9a-f]/g, '');
+    const mac = macNorm(e.wol_mac.value) === macNorm(p.mac) ? '' : e.wol_mac.value;
+    const port = Number(e.wol_port.value) === 9 ? null : num(e.wol_port.value);
+    const body = { wake: e.wake.value, wol_mac: mac, wol_port: port, wol_broadcast: e.wol_broadcast.value, wake_url: e.wake_url.value,
       shutdown: e.shutdown.value, ssh_credential_id: num(e.ssh_credential_id.value), shutdown_command: e.shutdown_command.value, shutdown_url: e.shutdown_url.value,
       http_method: e.http_method.value, http_credential_id: num(e.http_credential_id.value) };
     const chosen = new Set($$('input[name="group"]:checked', form).map((x) => Number(x.value)));

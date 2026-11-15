@@ -351,7 +351,7 @@ per Wake-on-LAN in der Regel nicht.
 
 | Art | Was passiert | Voraussetzung |
 |---|---|---|
-| SSH (Standard) | Linux, NAS, Raspberry Pi, Proxmox: `shutdown -h now` bzw. `poweroff` (mit 2 s Verzögerung). Windows (OpenSSH): `shutdown /s /t 5 /f` | SSH-Zugangsdaten (dem Gerät zugeordnet oder unter *Ein/Aus* gewählt). Das Konto ist root **oder** darf den Befehl per sudo ohne Passwort, z. B. Datei `/etc/sudoers.d/netpulse`: `netpulse ALL=(root) NOPASSWD: /sbin/shutdown`. Windows: Konto mit Admin-Rechten |
+| SSH (Standard) | Linux, NAS, Raspberry Pi, Proxmox: `shutdown -h now` bzw. `poweroff` (mit 2 s Verzögerung). Windows (OpenSSH): `shutdown /s /t 5 /f` | SSH-Zugangsdaten: unter *Ein/Aus* gewählt, sonst die dem Gerät zugeordneten, sonst werden SSH-Schlüssel mit „automatisch ausprobieren“ getestet (ein Treffer wird fest zugeordnet). Passwörter gehen nie automatisch an ein Gerät. Das Konto ist root **oder** darf den Befehl per sudo ohne Passwort, z. B. Datei `/etc/sudoers.d/netpulse`: `netpulse ALL=(root) NOPASSWD: /sbin/shutdown`. Windows: Konto mit Admin-Rechten |
 | Eigener Befehl | statt des automatischen Befehls, z. B. `sudo -n /sbin/poweroff` oder `synopoweroff` | wie oben |
 | HTTP-Aufruf | z. B. Home Assistant, Steckdose aus, eigenes Skript; optional mit Benutzer/Passwort aus den Zugangsdaten (Basic-Auth) | – |
 
@@ -364,6 +364,7 @@ SSH-Host-Schlüssel, bricht NetPulse ab.
 - Eine **Gruppe** fasst Geräte zusammen (z. B. „Büro-PCs“). Ein Gerät kann in mehreren Gruppen sein. Mitglieder wählst
   du unter *Ein/Aus → Gerätegruppen* oder beim Gerät unter *Einstellungen → Ein/Aus*. Die Knöpfe ▶ und ⏻ schalten
   alle Geräte der Gruppe.
+- Bekannte Werte sind schon eingetragen: die erkannte MAC-Adresse (folgt automatisch einer neuen MAC, solange du sie nicht änderst) und Port 9. Gibt es nur einen SSH-Zugang, ist er vorgeschlagen.
 - Ein **Zeitplan** hat Aktion (Aufwecken/Herunterfahren), Wochentage, Uhrzeit (Zeitzone aus `TZ`) und betrifft Gruppen
   und/oder einzelne Geräte. Neue Gruppenmitglieder sind automatisch dabei.
 - Geräte, die schon an (bzw. aus) sind, werden übersprungen. Ein verpasster Termin – NetPulse war gerade aus – wird
