@@ -90,6 +90,7 @@ pub fn protocol(kind: &str) -> Option<&'static str> {
         "ssh_password" | "ssh_key" => Some("ssh"),
         "snmp_v2c" | "snmp_v3" => Some("snmp"),
         "http" | "http_basic" | "http_token" => Some("http"),
+        "winrm" => Some("winrm"),
         _ => None,
     }
 }
@@ -97,7 +98,7 @@ pub fn protocol(kind: &str) -> Option<&'static str> {
 /// Prüft eine Definition auf offensichtliche Fehler (vor dem Speichern)
 pub fn validate(q: &Query, kind: &str) -> Result<()> {
     let proto = protocol(kind)
-        .ok_or_else(|| anyhow!("Mit dieser Zugangsart sind keine eigenen Abfragen möglich – bitte SSH-, HTTP- oder SNMP-Zugangsdaten wählen"))?;
+        .ok_or_else(|| anyhow!("Mit dieser Zugangsart sind keine eigenen Abfragen möglich – bitte SSH-, Windows-, HTTP- oder SNMP-Zugangsdaten wählen"))?;
     if !["read", "action"].contains(&q.mode.as_str()) {
         bail!("Unbekannte Art (Abfrage oder Aktion)");
     }
@@ -410,6 +411,21 @@ async fn fetch(state: &AppState, q: &Query, cred: &Credential, device_id: i64, t
     let ip: Ipv4Addr = t.ip.parse().map_err(|_| anyhow!("Nur IPv4 wird unterstützt"))?;
     let action = q.mode == "action";
     match protocol(&cred.kind) {
+        Some("winrm") => {
+            let out = super::winrm::run(ip, cred, t.tls_pin.as_deref(), q.target.trim()).await?;
+            if let Some(pin) = &out.pin {
+                sqlx::query("UPDATE devices SET tls_pin = $2 WHERE id = $1 AND tls_pin IS NULL")
+                    .bind(device_id)
+                    .bind(pin)
+                    .execute(&state.db)
+                    .await?;
+            }
+            if out.code != 0 {
+                let detail = if out.stderr.is_empty() { clip(out.stdout.trim()) } else { clip(&out.stderr) };
+                bail!("PowerShell endete mit Code {}{}", out.code, if detail.is_empty() { String::new() } else { format!(": {detail}") });
+            }
+            Ok(out.stdout)
+        }
         Some("ssh") => {
             let result = ssh::run_action(ip, cred, t.ssh_host_key.as_deref(), q.target.trim(), None).await;
             match result {

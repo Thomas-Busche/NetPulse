@@ -531,6 +531,7 @@ const CRED_KINDS = {
   snmp_v2c: { label: 'SNMP v2c', icon: 'network', port: 161, group: 'generic' },
   ssh_key: { label: 'SSH mit Schlüssel (empfohlen)', icon: 'key', port: 22, group: 'generic' },
   ssh_password: { label: 'SSH mit Passwort', icon: 'lock', port: 22, group: 'generic' },
+  winrm: { label: 'Windows-Remoteverwaltung (WinRM, PowerShell)', icon: 'brand-windows', port: '5986 / 5985', group: 'generic' },
   http_basic: { label: 'HTTP/REST-API mit Benutzer + Passwort', icon: 'world-www', port: '443 / 80', group: 'generic' },
   http_token: { label: 'HTTP/REST-API mit Token / API-Schlüssel', icon: 'world-www', port: '443 / 80', group: 'generic' },
   http: { label: 'Shelly (HTTP)', icon: 'bolt', port: 80, group: 'vendor' },
@@ -544,12 +545,71 @@ const CRED_GROUPS = [
   ['vendor', 'Fertige Hersteller-Anbindungen'],
 ];
 /** Nur fest einem Gerät zugeordnet, nie automatisch ausprobiert */
-const DEVICE_ONLY_KINDS = ['unifi', 'fritzbox', 'opnsense', 'mikrotik', 'http_basic', 'http_token'];
+const DEVICE_ONLY_KINDS = ['unifi', 'fritzbox', 'opnsense', 'mikrotik', 'http_basic', 'http_token', 'winrm'];
 /** Arten, mit denen eigene Abfragen/Aktionen möglich sind, und wie das Ziel heißt */
 const QUERY_PROTO = {
-  ssh_key: 'ssh', ssh_password: 'ssh', snmp_v2c: 'snmp', snmp_v3: 'snmp', http: 'http', http_basic: 'http', http_token: 'http',
+  ssh_key: 'ssh', ssh_password: 'ssh', winrm: 'winrm', snmp_v2c: 'snmp', snmp_v3: 'snmp', http: 'http', http_basic: 'http', http_token: 'http',
 };
 const credKindLabel = (c) => (CRED_KINDS[c.kind] || {}).label || c.kind;
+
+/**
+ * Vorlagen je Gerät/Dienst: wählen Zugangsart, Port und Einstellungen vor und erklären, was am Gerät zu tun ist.
+ * Fehlt etwas, geht es immer mit den allgemeinen Arten (SSH, WinRM, HTTP/REST, SNMP) und eigenen Abfragen.
+ */
+const CRED_PRESETS = [
+  ['Windows', [
+    { id: 'win-winrm', label: 'Windows-PC / -Server (WinRM, ohne Zusatzsoftware)', kind: 'winrm', port: 5986, o: { scheme: 'https' }, user: 'benutzer oder DOMÄNE\\benutzer', vendor: 'Windows',
+      hint: 'Am Windows-Gerät einmalig als Administrator in PowerShell: HTTPS-Zugang einrichten (Befehle siehe Handbuch → ABFRAGEN.md „Windows“). '
+        + 'Konto in die Gruppe „Remoteverwaltungsbenutzer“ (zum Lesen) bzw. Administratoren (zum Herunterfahren). Liefert CPU, RAM, Platten; Herunterfahren als Aktion.' },
+    { id: 'win-ssh', label: 'Windows mit OpenSSH-Server', kind: 'ssh_password', port: 22, vendor: 'Windows',
+      hint: 'Einstellungen → Apps → Optionale Features → „OpenSSH-Server“ installieren und Dienst starten.' },
+    { id: 'win-snmp', label: 'Windows mit SNMP-Dienst', kind: 'snmp_v2c', vendor: 'Windows', hint: 'Optionales Feature „SNMP-Dienst“; Community und erlaubte Hosts in den Diensteigenschaften setzen.' },
+  ]],
+  ['Server, NAS und Linux', [
+    { id: 'linux', label: 'Linux / Raspberry Pi / Docker-Host', kind: 'ssh_key', port: 22, vendor: 'Linux', hint: 'Eigenen Benutzer ohne sudo anlegen und den öffentlichen Schlüssel eintragen (ABFRAGEN.md).' },
+    { id: 'synology', label: 'Synology DSM', kind: 'ssh_key', port: 22, vendor: 'Synology', hint: 'Systemsteuerung → Terminal & SNMP → SSH aktivieren (Benutzer in Gruppe administrators). Alternativ SNMP v3 im selben Menü.' },
+    { id: 'qnap', label: 'QNAP QTS', kind: 'snmp_v3', vendor: 'QNAP', hint: 'Systemsteuerung → Netzwerk- & Dateidienste → SNMP: SNMP v3 aktivieren.' },
+    { id: 'ugreen', label: 'Ugreen NAS (UGOS)', kind: 'ssh_password', port: 22, vendor: 'Ugreen', hint: 'Systemsteuerung → Terminal → SSH aktivieren; Admin-Benutzer verwenden.' },
+    { id: 'truenas-api', label: 'TrueNAS (REST-API mit API-Schlüssel)', kind: 'http_token', port: 443, o: { scheme: 'https', test_path: '/api/v2.0/system/info' }, vendor: 'TrueNAS',
+      hint: 'Oben rechts → Benutzer → API Keys → „Add“. Liefert per eigener Abfrage z. B. Pool-Zustand und Laufzeit.' },
+    { id: 'truenas-ssh', label: 'TrueNAS (SSH)', kind: 'ssh_key', port: 22, vendor: 'TrueNAS', hint: 'System → Dienste → SSH; Schlüssel beim Benutzer hinterlegen.' },
+    { id: 'unraid', label: 'Unraid', kind: 'ssh_key', port: 22, vendor: 'Unraid', hint: 'Einstellungen → Management Access → SSH.' },
+    { id: 'omv', label: 'OpenMediaVault', kind: 'ssh_key', port: 22, vendor: 'OpenMediaVault', hint: 'Dienste → SSH aktivieren.' },
+  ]],
+  ['Virtualisierung und Smart Home', [
+    { id: 'pve', label: 'Proxmox VE (API-Token)', kind: 'http_token', port: 8006, o: { scheme: 'https', prefix: 'PVEAPIToken=', test_path: '/api2/json/version' }, vendor: 'Proxmox',
+      hint: 'Rechenzentrum → Berechtigungen → API-Token anlegen (Rolle PVEAuditor reicht zum Lesen). Als Token eintragen: benutzer@pam!tokenname=GEHEIMNIS' },
+    { id: 'pbs', label: 'Proxmox Backup Server (API-Token)', kind: 'http_token', port: 8007, o: { scheme: 'https', prefix: 'PBSAPIToken=', test_path: '/api2/json/version' }, vendor: 'Proxmox',
+      hint: 'Konfiguration → Zugriffskontrolle → API-Token. Token: benutzer@pbs!tokenname:GEHEIMNIS' },
+    { id: 'esxi', label: 'VMware ESXi (SSH)', kind: 'ssh_password', port: 22, vendor: 'VMware', hint: 'Host → Aktionen → Dienste → SSH aktivieren.' },
+    { id: 'ha', label: 'Home Assistant (langlebiges Token)', kind: 'http_token', port: 8123, o: { scheme: 'http', test_path: '/api/' }, vendor: 'Home Assistant',
+      hint: 'Profil → Sicherheit → „Langlebige Zugriffstoken“ erstellen. Bei HTTPS-Zugang Protokoll auf HTTPS stellen.' },
+    { id: 'iobroker', label: 'ioBroker (simple-api)', kind: 'http_basic', port: 8087, o: { scheme: 'http', test_path: '/getPlainValue/system.adapter.admin.0.alive' }, vendor: 'ioBroker',
+      hint: 'Adapter „simple-api“ installieren; Benutzer/Passwort, falls Authentifizierung aktiv.' },
+    { id: 'portainer', label: 'Portainer (API-Schlüssel)', kind: 'http_token', port: 9443, o: { scheme: 'https', header: 'X-API-Key', prefix: '', test_path: '/api/status' }, vendor: 'Portainer',
+      hint: 'Mein Konto → Access tokens → „Add access token“.' },
+  ]],
+  ['Fernwartung von Servern (Redfish)', [
+    { id: 'idrac', label: 'Dell iDRAC', kind: 'http_basic', port: 443, o: { scheme: 'https', test_path: '/redfish/v1/Systems/System.Embedded.1' }, vendor: 'Dell iDRAC',
+      hint: 'iDRAC-Benutzer mit Rolle „Read Only“ (zum Ein-/Ausschalten „Operator“). Liefert Stromzustand, Zustand, Temperaturen per eigener Abfrage.' },
+    { id: 'ilo', label: 'HPE iLO', kind: 'http_basic', port: 443, o: { scheme: 'https', test_path: '/redfish/v1/Systems/1' }, vendor: 'HPE iLO', hint: 'iLO-Benutzer mit Leserechten anlegen.' },
+    { id: 'supermicro', label: 'Supermicro / Lenovo XCC / ASRock (BMC)', kind: 'http_basic', port: 443, o: { scheme: 'https', test_path: '/redfish/v1/Systems' }, vendor: 'BMC',
+      hint: 'BMC-Benutzer mit Leserechten. Pfad des Systems mit „Testen“ unter /redfish/v1/Systems nachsehen.' },
+  ]],
+  ['Netzwerk', [
+    { id: 'fritz', label: 'AVM FRITZ!Box', kind: 'fritzbox', vendor: 'AVM' },
+    { id: 'unifi', label: 'UniFi-Controller', kind: 'unifi', vendor: 'Ubiquiti' },
+    { id: 'opnsense', label: 'OPNsense', kind: 'opnsense', vendor: 'OPNsense' },
+    { id: 'pfsense', label: 'pfSense', kind: 'ssh_key', port: 22, vendor: 'pfSense', hint: 'System → Advanced → Secure Shell aktivieren; alternativ SNMP unter Services → SNMP.' },
+    { id: 'mikrotik', label: 'MikroTik RouterOS', kind: 'mikrotik', vendor: 'MikroTik' },
+    { id: 'switch', label: 'Switch / Access Point / Router (SNMP)', kind: 'snmp_v3', vendor: '', hint: 'In der Weboberfläche des Geräts SNMP (am besten v3) einschalten.' },
+    { id: 'shelly', label: 'Shelly', kind: 'http', vendor: 'Shelly' },
+  ]],
+  ['Drucker und USV', [
+    { id: 'printer', label: 'Netzwerkdrucker (Toner, Seitenzähler)', kind: 'snmp_v2c', vendor: '', hint: 'Bei den meisten Druckern ist SNMP v2c mit Community „public“ ab Werk an.' },
+    { id: 'ups', label: 'USV (APC, Eaton, CyberPower)', kind: 'snmp_v3', vendor: '', hint: 'Netzwerkkarte der USV: SNMP aktivieren (v3 bevorzugt).' },
+  ]],
+];
 
 /**
  * Zugangsdaten anlegen/bearbeiten. `opts.kind`/`opts.name` füllen ein neues Formular vor,
@@ -561,6 +621,9 @@ function credDialog(cred, opts = {}) {
   const o = (cred && cred.options) || {};
   const current = cred ? cred.kind : opts.kind || 'snmp_v3';
   const dlg = openModal(editing ? 'Zugangsdaten bearbeiten' : 'Zugangsdaten hinzufügen', `<form class="form" id="cred-form">
+    ${editing ? '' : `<label>Gerät / Dienst (Vorlage)<select id="cred-preset"><option value="">– selbst wählen –</option>${CRED_PRESETS.map(([g, list]) => `<optgroup label="${esc(g)}">
+      ${list.map((x) => `<option value="${x.id}">${esc(x.label)}</option>`).join('')}</optgroup>`).join('')}</select></label>
+    <p class="hint" id="preset-hint" hidden></p>`}
     <label>Art<select name="kind"${editing ? ' disabled' : ''}>${CRED_GROUPS.map(([g, label]) => `<optgroup label="${esc(label)}">
       ${Object.entries(CRED_KINDS).filter(([, v]) => v.group === g).map(([k, v]) => `<option value="${k}"${current === k ? ' selected' : ''}>${esc(v.label)}</option>`).join('')}</optgroup>`).join('')}</select></label>
     <p class="hint" id="kind-hint"></p>
@@ -572,14 +635,16 @@ function credDialog(cred, opts = {}) {
     'TP-Link Omada', 'Zyxel', 'Netgear', 'Cisco', 'HP / HPE', 'Brother', 'Canon', 'Epson', 'APC', 'Eaton', 'Raspberry Pi', 'Windows', 'Linux', 'Docker', 'Portainer']
     .map((v) => `<option value="${esc(v)}">`).join('')}</datalist>
     <div class="form-row">
-      <label data-for="snmp_v3 ssh_key ssh_password http http_basic unifi fritzbox opnsense mikrotik"><span id="user-label">Benutzername</span><input name="username" value="${esc(cred ? cred.username || '' : '')}" autocomplete="off"></label>
+      <label data-for="snmp_v3 ssh_key ssh_password winrm http http_basic unifi fritzbox opnsense mikrotik"><span id="user-label">Benutzername</span><input name="username" value="${esc(cred ? cred.username || '' : '')}" autocomplete="off"></label>
       <label>Port<input name="port" type="number" min="1" max="65535" value="${esc(cred ? cred.port || '' : '')}" placeholder="Standard"></label>
     </div>
-    <div class="form-row" data-for="http_basic http_token">
+    <div class="form-row" data-for="http_basic http_token winrm">
       <label>Protokoll<select name="scheme"><option value="https"${o.scheme !== 'http' ? ' selected' : ''}>HTTPS (empfohlen)</option>
         <option value="http"${o.scheme === 'http' ? ' selected' : ''}>HTTP (unverschlüsselt, nur im LAN)</option></select></label>
-      <label>Test-Pfad<input name="test_path" value="${esc(o.test_path || '')}" placeholder="/ (z. B. /api/status)"></label>
+      <label data-for="http_basic http_token">Test-Pfad<input name="test_path" value="${esc(o.test_path || '')}" placeholder="/ (z. B. /api/status)"></label>
     </div>
+    <label data-for="winrm">Anmeldeverfahren<select name="winrm_auth"><option value="">automatisch (NTLM, Standard von Windows – nur mit HTTPS)</option>
+      <option value="basic"${o.auth === 'basic' ? ' selected' : ''}>Basic (nur lokale Konten, muss am Gerät eingeschaltet sein)</option></select></label>
     <label data-for="http_basic">Anmeldeverfahren<select name="auth"><option value="">automatisch (Basic, bei Bedarf Digest)</option>
       <option value="digest"${o.auth === 'digest' ? ' selected' : ''}>nur Digest (Passwort nie im Klartext)</option></select></label>
     <div class="form-row" data-for="http_token">
@@ -598,7 +663,7 @@ function credDialog(cred, opts = {}) {
         <option value="des">DES (veraltet)</option><option value="none">keine</option></select></label>
       <label>Verschlüsselungs-Passwort<input name="priv_password" type="password" autocomplete="new-password" placeholder="${keep}"></label>
     </div>
-    <label data-for="ssh_password http http_basic unifi fritzbox opnsense mikrotik"><span id="pw-label">Passwort</span><input name="password" type="password" autocomplete="new-password" placeholder="${keep}"></label>
+    <label data-for="ssh_password winrm http http_basic unifi fritzbox opnsense mikrotik"><span id="pw-label">Passwort</span><input name="password" type="password" autocomplete="new-password" placeholder="${keep}"></label>
     <label data-for="ssh_key">Privater Schlüssel (OpenSSH-Format)<textarea name="private_key" class="mono" placeholder="${keep || '-----BEGIN OPENSSH PRIVATE KEY-----'}"></textarea></label>
     <label data-for="ssh_key">Passphrase (optional)<input name="passphrase" type="password" autocomplete="new-password" placeholder="${keep}"></label>
     <label class="inline" data-for="snmp_v2c snmp_v3 ssh_key http"><input type="checkbox" name="auto"${cred && cred.auto ? ' checked' : ''}> Automatisch bei allen passenden Geräten verwenden</label>
@@ -611,6 +676,8 @@ function credDialog(cred, opts = {}) {
     ssh_key: 'Für Linux, NAS, Proxmox, Raspberry Pi, Windows (OpenSSH) und jedes andere Gerät mit SSH. Standard-Werte (CPU, RAM, Platten) kommen automatisch; '
       + 'eigene Befehle – auch Aktionen wie Herunterfahren – unter „Eigene Abfragen“.',
     ssh_password: 'Wie SSH mit Schlüssel, nur mit Passwort. Wird nur Geräten gesendet, die du gezielt zuordnest.',
+    winrm: 'Für Windows ohne Zusatzsoftware: liest CPU, RAM und Platten wie über SSH und führt eigene PowerShell-Befehle aus – auch Aktionen wie Herunterfahren. '
+      + 'Am Gerät einmalig WinRM über HTTPS einrichten (Anleitung in ABFRAGEN.md). Domänenkonto als DOMÄNE\\benutzer.',
     http_basic: 'Für jede Weboberfläche oder REST-API mit Benutzer und Passwort (z. B. NAS-API, Drucker-Webseite, Smart-Home-Zentrale). '
       + 'Welche Daten gelesen werden, legst du unter „Eigene Abfragen“ fest (Pfad + JSON-Feld).',
     http_token: 'Für REST-APIs mit Token oder API-Schlüssel, z. B. Home Assistant (Authorization: Bearer …), Proxmox (Authorization: PVEAPIToken=…), '
@@ -623,7 +690,7 @@ function credDialog(cred, opts = {}) {
     $('#auto-hint', dlg).textContent = kind === 'snmp_v2c'
       ? 'Hinweis: Bei SNMP v2c wird die Community unverschlüsselt an jedes getestete Gerät gesendet. Für „automatisch“ besser SNMP v3.'
       : kind === 'ssh_password' ? 'SSH-Passwörter werden aus Sicherheitsgründen nie automatisch ausprobiert – bitte Geräte gezielt zuordnen.'
-        : kind === 'http_basic' || kind === 'http_token' ? 'Wird nur den Geräten gesendet, denen du die Zugangsdaten zuordnest – nie automatisch. '
+        : kind === 'http_basic' || kind === 'http_token' || kind === 'winrm' ? 'Wird nur den Geräten gesendet, denen du die Zugangsdaten zuordnest – nie automatisch. '
           + 'Bei HTTPS merkt sich NetPulse das Zertifikat des Geräts beim ersten Kontakt; ändert es sich, werden keine Zugangsdaten mehr gesendet.'
           : kind === 'http' ? 'Gilt für alle erkannten Shelly-Geräte (Benutzer bei Gen2+ immer „admin“). Das Passwort geht nur an Geräte, die sich '
           + 'vorher als Shelly ausgewiesen haben; bei Gen2+ wird es per Digest-Verfahren nie im Klartext übertragen.'
@@ -643,6 +710,24 @@ function credDialog(cred, opts = {}) {
     if (kind === 'http' && !form.elements.username.value) form.elements.username.value = 'admin';
   };
   form.kind.addEventListener('change', update);
+  $('#cred-preset', dlg)?.addEventListener('change', (ev) => {
+    const preset = CRED_PRESETS.flatMap(([, list]) => list).find((x) => x.id === ev.target.value);
+    const hint = $('#preset-hint', dlg);
+    hint.hidden = !preset || !preset.hint;
+    if (!preset) return;
+    hint.textContent = preset.hint || '';
+    const po = preset.o || {};
+    form.kind.value = preset.kind;
+    form.elements.port.value = preset.port || '';
+    form.elements.vendor.value = preset.vendor || '';
+    form.elements.scheme.value = po.scheme || 'https';
+    form.elements.test_path.value = po.test_path || '';
+    form.elements.header.value = po.header || '';
+    form.elements.prefix.value = po.prefix != null ? po.prefix : '';
+    form.elements.username.placeholder = preset.user || '';
+    if (!form.elements.name.value) form.elements.name.value = preset.label.replace(/ \(.*\)$/, '');
+    update();
+  });
   update();
   form.addEventListener('submit', (ev) => {
     ev.preventDefault();
@@ -654,6 +739,7 @@ function credDialog(cred, opts = {}) {
     const options = { vendor: v('vendor') };
     if (kind === 'http_basic' || kind === 'http_token') { options.scheme = v('scheme'); options.test_path = v('test_path'); }
     if (kind === 'http_basic') options.auth = v('auth');
+    if (kind === 'winrm') { options.scheme = v('scheme'); options.auth = v('winrm_auth'); }
     if (kind === 'http_token') {
       options.header = v('header');
       // Vorsatz nur mitsenden, wenn ausgefüllt oder bei eigenem Header bewusst leer (z. B. X-API-Key)
@@ -691,6 +777,22 @@ const QUERY_TEMPLATES = [
   { proto: 'http', name: 'Home Assistant: Sensorwert', target: '/api/states/sensor.wohnzimmer_temperatur', extract: 'state', value_type: 'number', unit: '°C', hint: 'Token-Zugang, Header Authorization, Vorsatz „Bearer “' },
   { proto: 'http', name: 'Proxmox: Version', target: '/api2/json/version', extract: 'data.version', value_type: 'text', hint: 'Token-Zugang, Port 8006, Vorsatz „PVEAPIToken=“' },
   { proto: 'http', name: 'JSON-Feld lesen', target: '/api/status', extract: 'status', value_type: 'text', hint: 'beliebige REST-API' },
+  { proto: 'winrm', name: 'Laufzeit (Tage)', target: '[math]::Round(((Get-Date) - (Get-CimInstance Win32_OperatingSystem).LastBootUpTime).TotalDays, 2)', value_type: 'number', unit: 'Tage', hint: 'Windows' },
+  { proto: 'winrm', name: 'Freier Speicher C:', target: '[math]::Round((Get-PSDrive C).Free / 1GB, 1)', value_type: 'number', unit: 'GB', hint: 'Windows' },
+  { proto: 'winrm', name: 'Dienst läuft? (1 = ja)', target: "[int]((Get-Service -Name 'Spooler').Status -eq 'Running')", value_type: 'number', hint: 'Dienstnamen anpassen' },
+  { proto: 'winrm', name: 'Angemeldete Benutzer', target: '(Get-CimInstance Win32_ComputerSystem).UserName', value_type: 'text', hint: 'Windows' },
+  { proto: 'winrm', name: 'Neustart ausstehend (1 = ja)', target: "[int](Test-Path 'HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\WindowsUpdate\\Auto Update\\RebootRequired')", value_type: 'number', hint: 'nach Windows-Updates' },
+  { proto: 'winrm', name: 'Virenschutz aktuell (Tage alt)', target: '((Get-Date) - (Get-MpComputerStatus).AntivirusSignatureLastUpdated).Days', value_type: 'number', unit: 'Tage', hint: 'Microsoft Defender' },
+  { proto: 'winrm', mode: 'action', name: 'Herunterfahren (Windows)', target: 'Stop-Computer -Force', hint: 'Konto braucht Administratorrechte' },
+  { proto: 'winrm', mode: 'action', name: 'Neu starten (Windows)', target: 'Restart-Computer -Force', hint: 'Konto braucht Administratorrechte' },
+  { proto: 'http', name: 'Redfish: Stromzustand', target: '/redfish/v1/Systems/System.Embedded.1', extract: 'PowerState', value_type: 'text', hint: 'Dell iDRAC (iLO: /redfish/v1/Systems/1)' },
+  { proto: 'http', name: 'Redfish: Gesamtzustand', target: '/redfish/v1/Systems/System.Embedded.1', extract: 'Status.Health', value_type: 'text', hint: 'Dell iDRAC (iLO: /redfish/v1/Systems/1)' },
+  { proto: 'http', mode: 'action', name: 'Redfish: Herunterfahren', method: 'POST', target: '/redfish/v1/Systems/System.Embedded.1/Actions/ComputerSystem.Reset', body: '{"ResetType":"GracefulShutdown"}', hint: 'iDRAC/iLO/BMC – Benutzer mit Operator-Rechten' },
+  { proto: 'http', mode: 'action', name: 'Redfish: Einschalten', method: 'POST', target: '/redfish/v1/Systems/System.Embedded.1/Actions/ComputerSystem.Reset', body: '{"ResetType":"On"}', hint: 'Server per Fernwartung einschalten' },
+  { proto: 'http', name: 'TrueNAS: Laufzeit (s)', target: '/api/v2.0/system/info', extract: 'uptime_seconds', value_type: 'number', unit: 's', hint: 'TrueNAS-API' },
+  { proto: 'http', name: 'TrueNAS: Zustand erster Pool', target: '/api/v2.0/pool', extract: '0.status', value_type: 'text', hint: 'TrueNAS-API (ONLINE = gut)' },
+  { proto: 'http', name: 'Proxmox: CPU-Last Knoten', target: '/api2/json/nodes/pve/status', extract: 'data.cpu', value_type: 'number', hint: 'Knotennamen „pve“ anpassen; Wert 0–1' },
+  { proto: 'http', mode: 'action', name: 'Proxmox: Knoten herunterfahren', method: 'POST', target: '/api2/json/nodes/pve/status', body: '{"command":"shutdown"}', hint: 'Token braucht Sys.PowerMgmt' },
   { proto: 'snmp', name: 'Laufzeit (sysUpTime, 1/100 s)', target: '1.3.6.1.2.1.1.3.0', value_type: 'number', hint: 'jedes SNMP-Gerät' },
   { proto: 'snmp', name: 'Seitenzähler Drucker', target: '1.3.6.1.2.1.43.10.2.1.4.1.1', value_type: 'number', unit: 'Seiten', hint: 'Printer-MIB' },
   { proto: 'snmp', name: 'Eigene OID (Hersteller-MIB)', target: '1.3.6.1.4.1.', value_type: 'text', hint: 'OID im SNMP-Explorer des Geräts suchen' },
@@ -752,8 +854,8 @@ async function queryDialog(query, creds, onSaved) {
   const update = () => {
     const p = proto();
     $$('[data-proto]', form).forEach((el) => { el.hidden = el.dataset.proto !== p; });
-    $('#q-target-label', dlg).textContent = p === 'ssh' ? 'Befehl (läuft auf dem Gerät)' : p === 'http' ? 'Pfad oder URL (z. B. /api/status)' : 'OID (z. B. 1.3.6.1.2.1.1.3.0)';
-    form.target.placeholder = p === 'ssh' ? 'z. B. cat /sys/class/thermal/thermal_zone0/temp' : p === 'http' ? '/api/status' : '1.3.6.1.2.1.1.3.0';
+    $('#q-target-label', dlg).textContent = p === 'ssh' ? 'Befehl (läuft auf dem Gerät)' : p === 'winrm' ? 'PowerShell-Befehl (läuft auf dem Windows-Gerät)' : p === 'http' ? 'Pfad oder URL (z. B. /api/status)' : 'OID (z. B. 1.3.6.1.2.1.1.3.0)';
+    form.target.placeholder = p === 'ssh' ? 'z. B. cat /sys/class/thermal/thermal_zone0/temp' : p === 'winrm' ? 'z. B. (Get-PSDrive C).Free / 1GB' : p === 'http' ? '/api/status' : '1.3.6.1.2.1.1.3.0';
     $('#q-mode-hint', dlg).textContent = form.mode.value === 'action'
       ? 'Aktionen laufen nie automatisch. Ausführen in der Geräteansicht (Tab „Eigene Abfragen“) – oder durch Zeitpläne, z. B. zum Herunterfahren.'
       : 'Läuft bei jeder tiefen Abfrage (Standard alle paar Minuten). Ergebnis erscheint in der Geräteansicht im Tab „Eigene Abfragen“.';
@@ -775,7 +877,8 @@ async function queryDialog(query, creds, onSaved) {
     form.value_type.value = t.value_type || 'text';
     form.unit.value = t.unit || '';
     form.mode.value = t.mode || 'read';
-    form.method.value = 'GET';
+    form.method.value = t.method || 'GET';
+    form.body.value = t.body || '';
     update();
   });
   const collect = () => ({
@@ -865,6 +968,7 @@ async function viewCredentials() {
   /** Passt ein Gerät grundsätzlich zur Zugangsart? (für die Vorauswahl) */
   const suits = (cred, d) => {
     if (cred.kind === 'http') return d.integration === 'shelly';
+    if (cred.kind === 'winrm') return (d.open_ports || []).some((p) => [5985, 5986].includes(p)) || /windows/i.test(`${d.os} ${d.vendor}`);
     if (cred.kind === 'http_basic' || cred.kind === 'http_token') {
       const ports = d.open_ports || [];
       return cred.port ? ports.includes(cred.port) : ports.some((p) => [80, 443, 8080, 8443].includes(p));

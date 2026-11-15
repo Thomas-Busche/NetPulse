@@ -19,7 +19,7 @@ use crate::{
 };
 
 const KINDS: &[&str] = &[
-    "snmp_v2c", "snmp_v3", "ssh_password", "ssh_key", "http", "http_basic", "http_token", "unifi", "fritzbox", "opnsense", "mikrotik",
+    "snmp_v2c", "snmp_v3", "ssh_password", "ssh_key", "winrm", "http", "http_basic", "http_token", "unifi", "fritzbox", "opnsense", "mikrotik",
 ];
 /// Erlaubte nicht geheime Einstellungen (Rest wird verworfen)
 const OPTION_KEYS: &[&str] = &["vendor", "scheme", "header", "prefix", "test_path", "auth"];
@@ -73,7 +73,7 @@ fn validate(kind: &str, auto: bool) -> ApiResult<()> {
                 .into(),
         ));
     }
-    if auto && (kind == "unifi" || kind == "http_basic" || kind == "http_token" || crate::collect::API_KINDS.contains(&kind)) {
+    if auto && (kind == "unifi" || kind == "http_basic" || kind == "http_token" || kind == "winrm" || crate::collect::API_KINDS.contains(&kind)) {
         return Err(ApiError::BadRequest(
             "Diese Zugangsdaten werden nur den ausgewählten Geräten fest zugeordnet und nie automatisch ausprobiert.".into(),
         ));
@@ -165,7 +165,7 @@ pub async fn create(
     let secret = merge(Secret::default(), req.secret);
     let missing = match kind {
         "snmp_v2c" => secret.community.is_none(),
-        "ssh_password" | "http" | "http_basic" => secret.password.is_none(),
+        "ssh_password" | "http" | "http_basic" | "winrm" => secret.password.is_none(),
         "http_token" => secret.token.is_none(),
         "ssh_key" => secret.private_key.is_none(),
         _ => false,
@@ -173,7 +173,7 @@ pub async fn create(
     if missing {
         return Err(ApiError::BadRequest("Bitte Community, Passwort, Token bzw. Schlüssel angeben".into()));
     }
-    if kind.starts_with("ssh") && req.username.as_deref().unwrap_or_default().trim().is_empty() {
+    if (kind.starts_with("ssh") || kind == "winrm") && req.username.as_deref().unwrap_or_default().trim().is_empty() {
         return Err(ApiError::BadRequest("Bitte einen Benutzernamen angeben".into()));
     }
     let options = clean_options(req.options.as_ref())?;

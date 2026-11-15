@@ -101,6 +101,13 @@ async fn check(cred: &Credential, t: &Target) -> Result<String> {
             let power = data["power_w"].as_f64().map(|w| format!(" · {w} W")).unwrap_or_default();
             Ok(format!("Shelly ok – {}{power}", data["name"].as_str().or(info.model.as_deref()).unwrap_or("Shelly")))
         }
+        "winrm" => {
+            let out = super::winrm::run(ip, cred, t.tls_pin.as_deref(), "\"$env:COMPUTERNAME | $((Get-CimInstance Win32_OperatingSystem).Caption)\"").await?;
+            if out.code != 0 {
+                bail!("Anmeldung ok, aber PowerShell meldet Fehler {}: {}", out.code, out.stderr);
+            }
+            Ok(format!("Windows-Remoteverwaltung ok – {}", out.stdout.trim()))
+        }
         "http_basic" | "http_token" => {
             let path = cred.options["test_path"].as_str().filter(|p| !p.trim().is_empty()).unwrap_or("/");
             let reply = super::custom::http_request(ip, cred, t.tls_pin.as_deref(), "GET", path, None).await?;
@@ -180,6 +187,7 @@ pub async fn start_scan(state: &AppState, credential_id: i64, device_ids: Option
                 "ssh_key" => format!("status = 'up' AND {} = ANY(open_ports)", cred.port.unwrap_or(22)),
                 "http" => "status = 'up' AND integration = 'shelly'".to_string(),
                 "unifi" => bail!("UniFi-Zugangsdaten bitte gezielt dem Controller zuordnen (Gerät auswählen)"),
+                "winrm" => bail!("Windows-Zugangsdaten werden nur an ausgewählte Geräte gesendet – bitte Geräte auswählen"),
                 "http_basic" | "http_token" => bail!("HTTP-Zugangsdaten werden nur an ausgewählte Geräte gesendet – bitte Geräte auswählen"),
                 "fritzbox" | "opnsense" | "mikrotik" => bail!("Diese Zugangsdaten bitte gezielt dem Router zuordnen (Gerät auswählen)"),
                 _ => bail!("SSH-Passwörter werden nur an ausgewählte Geräte gesendet – bitte Geräte auswählen"),

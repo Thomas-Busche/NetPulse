@@ -17,6 +17,7 @@ pub mod snmp;
 pub mod ssh;
 pub mod tls;
 pub mod unifi;
+pub mod winrm;
 
 use std::{net::Ipv4Addr, time::Duration};
 
@@ -370,6 +371,27 @@ pub async fn poll_device(state: &AppState, device_id: i64) -> Result<()> {
         }
     }
 
+    // Windows-Remoteverwaltung (WinRM): nur fest zugeordnet, gleiches Inventar wie Windows über SSH
+    for cred in credentials.iter().filter(|c| c.kind == "winrm") {
+        if !cred.linked || inventory.contains_key("ssh") {
+            continue;
+        }
+        match Box::pin(winrm::collect(addr, cred, tls_pin.as_deref())).await {
+            Ok((data, pin)) => {
+                if let (None, Some(pin)) = (&tls_pin, pin) {
+                    sqlx::query("UPDATE devices SET tls_pin = $2 WHERE id = $1 AND tls_pin IS NULL").bind(device_id).bind(pin).execute(&state.db).await?;
+                }
+                trace.add(Some(true), format!("Windows-Remoteverwaltung mit „{}“: Daten gelesen ({})", cred.name, data["os"].as_str().unwrap_or("Windows")));
+                inventory.insert("ssh".into(), data);
+                break;
+            }
+            Err(e) => {
+                trace.add(Some(false), format!("Windows-Remoteverwaltung mit „{}“: {e:#}", cred.name));
+                errors.push(format!("WinRM: {e:#}"));
+            }
+        }
+    }
+
     // UniFi-Controller: nur mit fest zugeordneten Zugangsdaten – API-Schlüssel und Passwort gehen nie an fremde Geräte
     for cred in credentials.iter().filter(|c| c.kind == "unifi") {
         if !cred.linked {
@@ -568,7 +590,7 @@ fn advice(open_ports: &[i32], has_linked: bool) -> String {
         tips.push("sieht nach UniFi-Controller aus → Zugangsart „UniFi-Controller“ mit API-Schlüssel zuordnen");
     }
     if has(5985) || has(5986) || has(3389) {
-        tips.push("Windows → OpenSSH-Server aktivieren oder SNMP-Dienst einrichten");
+        tips.push("Windows → Zugangsart „Windows-Remoteverwaltung (WinRM)“ zuordnen (ohne Zusatzsoftware) – oder OpenSSH-Server bzw. SNMP-Dienst einrichten");
     }
     if tips.is_empty() && (has(80) || has(443)) {
         tips.push("nur eine Weboberfläche – falls das Gerät SNMP kann, dort aktivieren und SNMP-Zugangsdaten zuordnen");

@@ -493,6 +493,7 @@ reinen Leserechten** – NetPulse führt nur lesende Abfragen aus. Einrichtung j
 | SNMP v3 (empfohlen) | dito | Benutzer, SHA-256 + AES-128 empfohlen |
 | SSH mit Schlüssel (empfohlen) | Linux, NAS, Proxmox, Pi, OpenWrt, OPNsense, Windows (OpenSSH) | Schlüssel erzeugen siehe ABFRAGEN.md |
 | SSH mit Passwort | dito | wird **nie automatisch** ausprobiert, nur an ausgewählte Geräte |
+| Windows-Remoteverwaltung (WinRM) | Windows ohne Zusatzsoftware | HTTPS + NTLM (oder Basic), PowerShell; gleiche Daten wie Windows über SSH, eigene Befehle und Herunterfahren als Aktion |
 | HTTP/REST-API mit Benutzer + Passwort | **jedes Gerät, jeder Dienst** mit Weboberfläche oder REST-API | Basic oder Digest, HTTPS mit gemerktem Zertifikat; nur fest zugeordnet. Was gelesen wird, legst du unter *Eigene Abfragen* fest |
 | HTTP/REST-API mit Token / API-Schlüssel | z. B. Home Assistant, Proxmox, Portainer, NAS-APIs | Header und Vorsatz frei wählbar (Standard `Authorization: Bearer …`); nur fest zugeordnet |
 | Shelly (HTTP) | Shelly | geht nur an Geräte, die sich als Shelly ausgewiesen haben (Gen2+ per Digest) |
@@ -506,6 +507,9 @@ reinen Leserechten** – NetPulse führt nur lesende Abfragen aus. Einrichtung j
   Zugangsdaten bei passenden Geräten selbst aus und ordnet sie bei Erfolg fest zu.
 - **Fest zugeordnet** (immer bei SSH-Passwort, SNMP v2c, HTTP/REST-API, UniFi, FRITZ!Box, OPNsense, MikroTik): Die
   Zugangsdaten gehen nur an die Geräte, die du auswählst.
+
+**Vorlagen:** Beim Anlegen wählt *„Gerät / Dienst (Vorlage)“* für gängige Geräte (Windows, NAS, Proxmox, Home Assistant,
+iDRAC/iLO, Drucker, USV …) Art, Port und Einstellungen vor und zeigt, was am Gerät einzuschalten ist.
 
 **Hersteller / Dienst:** Freies Feld, z. B. „Ugreen“, „TrueNAS“ oder „Home Assistant“ – nur zur Übersicht. Für Geräte,
 die NetPulse nicht von Haus aus kennt, wählst du eine der **allgemeinen Arten** (SNMP, SSH, HTTP/REST) und legst

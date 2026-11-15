@@ -1,9 +1,10 @@
 -- Flexible Zugangsdaten: allgemeine HTTP-Zugänge für beliebige Geräte/Dienste und eigene Abfragen/Aktionen.
 
--- Neue Arten: HTTP mit Benutzer + Passwort (Basic/Digest) und HTTP mit Token/API-Schlüssel
+-- Neue Arten: HTTP mit Benutzer + Passwort (Basic/Digest), HTTP mit Token/API-Schlüssel,
+-- Windows-Remoteverwaltung (WinRM, PowerShell)
 ALTER TABLE credentials DROP CONSTRAINT IF EXISTS credentials_kind_check;
 ALTER TABLE credentials ADD CONSTRAINT credentials_kind_check
-    CHECK (kind IN ('snmp_v2c', 'snmp_v3', 'ssh_password', 'ssh_key', 'http', 'http_basic', 'http_token',
+    CHECK (kind IN ('snmp_v2c', 'snmp_v3', 'ssh_password', 'ssh_key', 'http', 'http_basic', 'http_token', 'winrm',
                     'unifi', 'fritzbox', 'opnsense', 'mikrotik'));
 
 -- Nicht geheime Einstellungen je Zugangsangabe, z. B.
@@ -16,6 +17,7 @@ ALTER TABLE credentials ADD COLUMN options JSONB NOT NULL DEFAULT '{}'::jsonb;
 
 -- Eigene Abfragen und Aktionen. Das Protokoll ergibt sich aus der Zugangsart:
 --   SSH  → target ist ein Befehl (läuft über `sh -c` bzw. die Login-Shell)
+--   WinRM → target ist ein PowerShell-Befehl
 --   HTTP → target ist ein Pfad („/api/status“) oder eine vollständige URL zum selben Gerät
 --   SNMP → target ist eine OID („1.3.6.1.2.1.1.3.0“); ohne Wert wird darunter gelesen (Walk)
 -- mode 'read' läuft bei jeder Inventar-Abfrage, mode 'action' nur auf Knopfdruck

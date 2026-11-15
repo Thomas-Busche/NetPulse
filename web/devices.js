@@ -397,7 +397,7 @@ async function viewDevice(id) {
     const list = [['overview', 'Übersicht']];
     // Live: Shelly über den Echtzeit-Stream, sonst Datenraten per SNMP/SSH (Netzwerk-Schnittstellen)
     if (isShelly()) list.push(['live', 'Live']);
-    else if (data.device.has_credentials && (inv.snmp || inv.ssh)) list.push(['live', 'Live']);
+    else if (data.device.has_credentials && (inv.snmp || (inv.ssh && inv.ssh.via !== 'winrm'))) list.push(['live', 'Live']);
     if (inv.unifi) list.push(['unifi', 'UniFi']);
     if (inv.unifi || inv.netclients) list.push(['clients', 'Verbundene Geräte']);
     if (inv.ssh || inv.snmp || inv.shelly || data.unifi_device || data.net_client) list.push(['system', 'System']);
